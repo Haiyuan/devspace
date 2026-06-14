@@ -400,7 +400,7 @@ function DiffPayload({
 function SummaryBadges({ card }: { card: ToolResultCard }) {
   const summary = card.summary ?? {};
 
-  if (card.tool === "edit_file") {
+  if (card.tool === "edit_file" || card.tool === "write_file") {
     return (
       <span className="stats" aria-label="Diff statistics">
         <span className="add">+{String(summary.additions ?? 0)}</span>
@@ -421,9 +421,6 @@ function SummaryBadges({ card }: { card: ToolResultCard }) {
     return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
   }
 
-  if (card.tool === "write_file") {
-    return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
-  }
 
   return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
 }

@@ -593,6 +593,8 @@ function createMcpServer(
       outputSchema: cardOutputSchema(
         "write_file",
         z.object({
+          additions: z.number().int().nonnegative(),
+          removals: z.number().int().nonnegative(),
           lines: z.number().int().nonnegative(),
           characters: z.number().int().nonnegative(),
         }),
@@ -619,7 +621,10 @@ function createMcpServer(
 
       if (response.isError) return response;
 
+      const patch = newFilePatch(input.path, input.content);
+      const stats = countDiffStats(patch);
       const summary = {
+        ...stats,
         lines: contentLineCount(input.content),
         characters: input.content.length,
       };
@@ -632,7 +637,7 @@ function createMcpServer(
         summary,
         payload: {
           content: response.content,
-          patch: newFilePatch(input.path, input.content),
+          patch,
         },
       });
 
