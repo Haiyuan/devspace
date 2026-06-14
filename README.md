@@ -77,6 +77,31 @@ PI_ON_MCP_TOOL_MODE="full" \
 npm run dev
 ```
 
+## Release Builds
+
+Use release builds for long-running MCP server processes:
+
+```bash
+npm run release:build
+
+PI_ON_MCP_TOKEN="change-me" \
+PI_ON_MCP_ALLOWED_ROOTS="/home/waishnav/personal,/home/waishnav/work" \
+PI_ON_MCP_ALLOWED_HOSTS="localhost,127.0.0.1,agent.gitcms.blog" \
+PI_ON_MCP_PUBLIC_BASE_URL="https://agent.gitcms.blog" \
+PI_ON_MCP_TOOL_MODE="minimal" \
+npm run release:start
+```
+
+`release:build` runs the normal build, copies the built `dist/` tree into a new
+`releases/<release-id>/dist` directory, and updates `releases/current` to point
+at that immutable copy. A server already running from `npm run release:start`
+continues to use its existing release while normal development builds can keep
+rewriting `dist/`.
+
+The regular `npm run build` and `npm run start` commands are still useful for
+local development and smoke testing. For production-style long-running servers,
+prefer `release:build` followed by restarting `release:start`.
+
 The MCP endpoint is:
 
 ```text
