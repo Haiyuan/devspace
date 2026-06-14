@@ -274,9 +274,14 @@ function shouldUseHeavyPayload(card: ToolResultCard): boolean {
 }
 
 function unmountPayload(): void {
-  currentPayload?.unmount();
+  unmountCurrentPayload();
   currentPayload = null;
   currentPayloadContainer = null;
+}
+
+function unmountCurrentPayload(): void {
+  currentPayload?.unmount();
+  currentPayload = null;
 }
 
 function renderStatus(
@@ -284,7 +289,7 @@ function renderStatus(
   message: string,
   tone: "muted" | "error" = "muted",
 ): void {
-  unmountPayload();
+  unmountCurrentPayload();
   container.replaceChildren(element("div", { className: `status ${tone}`, text: message }));
 }
 
@@ -293,7 +298,7 @@ function renderPrePayload(
   text: string,
   tool: string,
 ): void {
-  unmountPayload();
+  unmountCurrentPayload();
   container.replaceChildren(element("pre", { className: `text-payload ${tool}`, text }));
 }
 
