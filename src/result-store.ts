@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import Database from "better-sqlite3";
+import { eq } from "drizzle-orm";
+import { openDatabase, type DatabaseHandle } from "./db/client.js";
+import { toolResults, type ToolResultRow } from "./db/schema.js";
 
 export interface DiffStats {
   additions: number;
@@ -48,26 +48,11 @@ export interface ToolResultStore {
   close?(): void;
 }
 
-interface ToolResultRow {
-  id: string;
-  workspace_id: string | null;
-  workspace_root: string | null;
-  tool: StoredToolName;
-  path: string | null;
-  label: string | null;
-  created_at: string;
-  summary_json: string;
-  payload_json: string;
-}
-
 export class SqliteResultStore implements ToolResultStore {
-  private readonly db: Database.Database;
+  private readonly database: DatabaseHandle;
 
   constructor(stateDir: string) {
-    mkdirSync(stateDir, { recursive: true });
-    this.db = new Database(join(stateDir, "pi-on-mcp.sqlite"));
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    this.database = openDatabase(stateDir);
     this.migrate();
   }
 
@@ -78,41 +63,32 @@ export class SqliteResultStore implements ToolResultStore {
       createdAt: new Date().toISOString(),
     };
 
-    this.db
-      .prepare(
-        `insert into tool_results (
-          id,
-          workspace_id,
-          workspace_root,
-          tool,
-          path,
-          label,
-          created_at,
-          summary_json,
-          payload_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        result.id,
-        result.workspaceId ?? null,
-        result.workspaceRoot ?? null,
-        result.tool,
-        result.path ?? null,
-        result.label ?? null,
-        result.createdAt,
-        JSON.stringify(result.summary),
-        JSON.stringify(result.payload),
-      );
+    this.database.db
+      .insert(toolResults)
+      .values({
+        id: result.id,
+        workspaceId: result.workspaceId ?? null,
+        workspaceRoot: result.workspaceRoot ?? null,
+        tool: result.tool,
+        path: result.path ?? null,
+        label: result.label ?? null,
+        createdAt: result.createdAt,
+        summaryJson: JSON.stringify(result.summary),
+        payloadJson: JSON.stringify(result.payload),
+      })
+      .run();
 
     return result;
   }
 
   get(resultId: string, workspaceId?: string): StoredToolResult {
-    const row = this.db
-      .prepare("select * from tool_results where id = ?")
-      .get(resultId) as ToolResultRow | undefined;
+    const row = this.database.db
+      .select()
+      .from(toolResults)
+      .where(eq(toolResults.id, resultId))
+      .get();
 
-    if (!row || (workspaceId && row.workspace_id !== workspaceId)) {
+    if (!row || (workspaceId && row.workspaceId !== workspaceId)) {
       throw new Error(`Unknown tool result: ${resultId}`);
     }
 
@@ -120,11 +96,11 @@ export class SqliteResultStore implements ToolResultStore {
   }
 
   close(): void {
-    this.db.close();
+    this.database.close();
   }
 
   private migrate(): void {
-    this.db.exec(`
+    this.database.sqlite.exec(`
       create table if not exists tool_results (
         id text primary key,
         workspace_id text,
@@ -156,14 +132,14 @@ export function createResultStore(stateDir: string): ToolResultStore {
 function rowToStoredToolResult(row: ToolResultRow): StoredToolResult {
   return {
     id: row.id,
-    workspaceId: row.workspace_id ?? undefined,
-    workspaceRoot: row.workspace_root ?? undefined,
-    tool: row.tool,
+    workspaceId: row.workspaceId ?? undefined,
+    workspaceRoot: row.workspaceRoot ?? undefined,
+    tool: row.tool as StoredToolName,
     path: row.path ?? undefined,
     label: row.label ?? undefined,
-    createdAt: row.created_at,
-    summary: JSON.parse(row.summary_json) as Record<string, unknown>,
-    payload: JSON.parse(row.payload_json) as StoredToolPayload,
+    createdAt: row.createdAt,
+    summary: JSON.parse(row.summaryJson) as Record<string, unknown>,
+    payload: JSON.parse(row.payloadJson) as StoredToolPayload,
   };
 }
 
