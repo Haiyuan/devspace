@@ -220,6 +220,26 @@ function contentText(content: ToolContent[]): string {
     .join("\n");
 }
 
+function toolErrorPreview(content: ToolContent[]): string | undefined {
+  const text = contentText(content).replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+}
+
+function logFailedToolResponse(
+  config: ServerConfig,
+  fields: Omit<ToolLogFields, "success" | "durationMs" | "error">,
+  content: ToolContent[],
+  startedAt: number,
+): void {
+  logToolCall(config, {
+    ...fields,
+    success: false,
+    durationMs: Math.round(performance.now() - startedAt),
+    error: toolErrorPreview(content),
+  });
+}
+
 function textBlock(text: string): ToolContent {
   return { type: "text", text };
 }
@@ -615,7 +635,14 @@ function createMcpServer(
         },
       );
 
-      if (response.isError) return response;
+      if (response.isError) {
+        logFailedToolResponse(config, {
+          tool: toolNames.read,
+          workspaceId,
+          path: input.path,
+        }, response.content, startedAt);
+        return response;
+      }
       workspaces.markReadPathLoaded(workspace, readPath);
 
       const summary = {
@@ -683,7 +710,14 @@ function createMcpServer(
         root: workspace.root,
       });
 
-      if (response.isError) return response;
+      if (response.isError) {
+        logFailedToolResponse(config, {
+          tool: toolNames.write,
+          workspaceId,
+          path: input.path,
+        }, response.content, startedAt);
+        return response;
+      }
 
       const patch = newFilePatch(input.path, input.content);
       const stats = countDiffStats(patch);
@@ -777,7 +811,14 @@ function createMcpServer(
         root: workspace.root,
       });
 
-      if (response.isError) return response;
+      if (response.isError) {
+        logFailedToolResponse(config, {
+          tool: toolNames.edit,
+          workspaceId,
+          path: input.path,
+        }, response.content, startedAt);
+        return response;
+      }
 
       const stats = countDiffStats(
         response.details?.patch ?? response.details?.diff,
@@ -867,7 +908,14 @@ function createMcpServer(
           root: workspace.root,
         });
 
-        if (response.isError) return response;
+        if (response.isError) {
+          logFailedToolResponse(config, {
+            tool: toolNames.grep,
+            workspaceId,
+            path: input.path,
+          }, response.content, startedAt);
+          return response;
+        }
 
         const summary = {
           pattern: input.pattern,
@@ -935,7 +983,14 @@ function createMcpServer(
           root: workspace.root,
         });
 
-        if (response.isError) return response;
+        if (response.isError) {
+          logFailedToolResponse(config, {
+            tool: toolNames.glob,
+            workspaceId,
+            path: input.path,
+          }, response.content, startedAt);
+          return response;
+        }
 
         const summary = {
           pattern: input.pattern,
@@ -1003,7 +1058,14 @@ function createMcpServer(
           root: workspace.root,
         });
 
-        if (response.isError) return response;
+        if (response.isError) {
+          logFailedToolResponse(config, {
+            tool: toolNames.ls,
+            workspaceId,
+            path: input.path,
+          }, response.content, startedAt);
+          return response;
+        }
 
         const summary = textSummary(response.content);
         logToolCall(config, {
@@ -1084,7 +1146,16 @@ function createMcpServer(
         root: workspace.root,
       });
 
-      if (response.isError) return response;
+      if (response.isError) {
+        logFailedToolResponse(config, {
+          tool: toolNames.shell,
+          workspaceId,
+          workingDirectory: workingDirectory ?? ".",
+          command: input.command,
+          commandLength: input.command.length,
+        }, response.content, startedAt);
+        return response;
+      }
 
       const summary = {
         command: input.command,
