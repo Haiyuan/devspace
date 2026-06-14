@@ -14,6 +14,7 @@ export interface ServerConfig {
   minimalTools: boolean;
   toolNaming: ToolNamingMode;
   stateDir: string;
+  worktreeRoot: string;
 }
 
 function parsePort(value: string | undefined): number {
@@ -67,6 +68,10 @@ function defaultStateDir(): string {
   return join(homedir(), ".local", "share", "devspace");
 }
 
+function defaultWorktreeRoot(): string {
+  return join(homedir(), ".devspace", "worktrees");
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host: env.HOST ?? "127.0.0.1",
@@ -78,5 +83,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     minimalTools: parseMinimalTools(env),
     toolNaming: parseToolNaming(env.DEVSPACE_TOOL_NAMING),
     stateDir: resolve(env.DEVSPACE_STATE_DIR ?? defaultStateDir()),
+    worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? defaultWorktreeRoot())),
   };
 }
