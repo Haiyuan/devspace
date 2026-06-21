@@ -261,6 +261,49 @@ function sendJsonRpcError(
   });
 }
 
+function ensureMcpAcceptHeader(req: Request): void {
+  const headers = req.headers as Record<string, string | string[] | undefined>;
+  const current = headers.accept;
+  const currentAccept = Array.isArray(current) ? current.join(", ") : current;
+  const acceptParts = new Set(
+    (currentAccept ?? "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean),
+  );
+
+  acceptParts.add("application/json");
+  acceptParts.add("text/event-stream");
+  const nextAccept = [...acceptParts].join(", ");
+  headers.accept = nextAccept;
+
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    if (req.rawHeaders[i]?.toLowerCase() === "accept") {
+      req.rawHeaders[i + 1] = nextAccept;
+      return;
+    }
+  }
+  req.rawHeaders.push("Accept", nextAccept);
+}
+
+function ensureInitializeParams(req: Request): void {
+  const body = req.body as { method?: unknown; params?: unknown } | undefined;
+  if (
+    req.method !== "POST" ||
+    !body ||
+    body.method !== "initialize" ||
+    (body.params && Object.keys(body.params).length > 0)
+  ) {
+    return;
+  }
+
+  body.params = {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: "chatgpt", version: "unknown" },
+  };
+}
+
 function requestLogFields(req: Request, config: ServerConfig): Record<string, unknown> {
   return {
     ip: requestIp(req, config.logging.trustProxy),
@@ -1338,6 +1381,11 @@ export function createServer(config = loadConfig()): RunningServer {
         .setHeader("Access-Control-Allow-Origin", "*")
         .json({
           ...metadata,
+          token_endpoint_auth_methods_supported: [
+            "client_secret_basic",
+            "client_secret_post",
+            "none",
+          ],
           client_id_metadata_document_supported: true,
         });
     },
@@ -1395,36 +1443,60 @@ export function createServer(config = loadConfig()): RunningServer {
   // ChatGPT-compatibility middleware for /authorize:
   //   1. Auto-register dynamic redirect URIs on first use
   //   2. Inject PKCE params when the client omits them (ChatGPT does)
-  app.use("/authorize", (req, _res, next) => {
+  //   3. Inject resource param when the client omits it
+  app.use("/authorize", (req, res, next) => {
     try {
+
+      // For GET requests, Express re-parses req.query when entering a Router.
+      // Modifying req.url ensures injected params survive.
+      let urlObj: URL | undefined;
+      if (req.method === "GET") {
+        urlObj = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      }
+
       const params = (
         req.method === "POST" ? req.body : req.query
       ) as Record<string, string> | undefined;
-      if (!params) return next();
 
-      const clientId = params.client_id;
-      const redirectUri = params.redirect_uri;
+      if (params) {
+        const clientId = params.client_id;
+        const redirectUri = params.redirect_uri;
 
-      // Auto-register chatgpt.com redirect URIs
-      if (
-        clientId &&
-        redirectUri &&
-        redirectUri.startsWith("https://chatgpt.com/connector/oauth/")
-      ) {
-        const store =
-          oauthProvider.clientsStore as SqliteOAuthClientsStore;
-        store.addRedirectUri(clientId, redirectUri);
+        // Auto-register chatgpt.com redirect URIs
+        if (clientId && redirectUri) {
+          try {
+            const redirectUrl = new URL(redirectUri);
+            if (redirectUrl.hostname === "chatgpt.com" || redirectUrl.hostname.endsWith(".chatgpt.com")) {
+              const store = oauthProvider.clientsStore as SqliteOAuthClientsStore;
+              store.addRedirectUri(clientId, redirectUri);
+            }
+          } catch {
+            // Ignore invalid URL
+          }
+        }
       }
 
       // Inject placeholder PKCE params when the client omits them.
-      // ChatGPT does not send PKCE but the SDK requires it.
-      if (!params.code_challenge) {
-        if (req.method === "POST") {
-          req.body = { ...req.body, code_challenge: "chatgpt-no-pkce", code_challenge_method: "S256" };
-        } else {
-          (req.query as Record<string, string>).code_challenge = "chatgpt-no-pkce";
-          (req.query as Record<string, string>).code_challenge_method = "S256";
+      if (!params || !params.code_challenge) {
+        if (req.method === "POST" && req.body) {
+          req.body = { ...req.body, code_challenge: "lMQLhXz1Z9OV4zcJb1UDz49bwGteWSgdPzX4Sdwpu8E", code_challenge_method: "S256" };
+        } else if (req.method === "GET" && urlObj) {
+          urlObj.searchParams.set("code_challenge", "lMQLhXz1Z9OV4zcJb1UDz49bwGteWSgdPzX4Sdwpu8E");
+          urlObj.searchParams.set("code_challenge_method", "S256");
         }
+      }
+
+      // Inject resource param when the client omits it.
+      if (!params || !params.resource) {
+        if (req.method === "POST" && req.body) {
+          req.body = { ...req.body, resource: resourceServerUrl.href };
+        } else if (req.method === "GET" && urlObj) {
+          urlObj.searchParams.set("resource", resourceServerUrl.href);
+        }
+      }
+
+      if (req.method === "GET" && urlObj) {
+        req.url = urlObj.pathname + urlObj.search;
       }
     } catch {
       // best-effort — never block the authorize flow
@@ -1433,17 +1505,30 @@ export function createServer(config = loadConfig()): RunningServer {
   });
 
   // ChatGPT-compatibility middleware for /token:
-  //   Inject a placeholder code_verifier when the client omits it.
+  //   1. Support Basic Auth (ChatGPT "In header" option) by converting to body params
+  //   2. Inject a placeholder code_verifier when the client omits it.
   //   Must parse the urlencoded body BEFORE the SDK's token handler.
   app.use("/token", express.urlencoded({ extended: false }), (req, _res, next) => {
     try {
-      if (
-        req.method === "POST" &&
-        req.body &&
-        !req.body.code_verifier &&
-        req.body.grant_type === "authorization_code"
-      ) {
-        req.body.code_verifier = "chatgpt-no-pkce";
+      if (req.method === "POST" && req.body) {
+        // 1. Support Basic Auth
+        const auth = req.headers.authorization;
+        if (auth && auth.toLowerCase().startsWith("basic ")) {
+          const credentials = Buffer.from(auth.slice(6), "base64").toString("utf-8");
+          const [clientId, clientSecret] = credentials.split(":");
+          if (clientId) req.body.client_id = clientId;
+          if (clientSecret) req.body.client_secret = clientSecret;
+        }
+
+        if (!req.body.client_id && req.body.grant_type === "authorization_code" && req.body.code) {
+          const clientId = oauthProvider.clientIdForAuthorizationCode(String(req.body.code));
+          if (clientId) req.body.client_id = clientId;
+        }
+
+        // 2. Inject code_verifier if omitted (ChatGPT does not do PKCE)
+        if (!req.body.code_verifier && req.body.grant_type === "authorization_code") {
+          req.body.code_verifier = "chatgpt-no-pkce";
+        }
       }
     } catch {
       // best-effort
@@ -1492,37 +1577,13 @@ export function createServer(config = loadConfig()): RunningServer {
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
+    ensureInitializeParams(req);
     const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
 
-    // ChatGPT does not send the MCP-required Accept header. Node ≥22
-    // freezes req.headers, so we create a wrapper that injects the
-    // required value before the SDK transport reads it.
-    const rawAccept = (req.headers as Record<string, string | undefined>)["accept"];
-    const needsAccept =
-      rawAccept == null || !rawAccept.includes("text/event-stream");
-    const transportReq = needsAccept
-      ? new Proxy(req, {
-          get(target, prop, receiver) {
-            if (prop === "headers") {
-              const h = Reflect.get(target, prop, receiver) as Record<string, string | undefined>;
-              return new Proxy(h, {
-                get(hTarget, hProp) {
-                  if (hProp === "accept" || hProp === "Accept") {
-                    const orig = Reflect.get(hTarget, hProp) as string | undefined;
-                    return orig?.includes("text/event-stream")
-                      ? orig
-                      : orig
-                        ? `${orig}, text/event-stream`
-                        : "application/json, text/event-stream";
-                  }
-                  return Reflect.get(hTarget, hProp);
-                },
-              });
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        })
-      : req;
+    // ChatGPT sometimes omits the MCP-required Accept values. The SDK's
+    // Node wrapper rebuilds Web Headers from rawHeaders, so keep both views
+    // in sync before handing the request to the transport.
+    ensureMcpAcceptHeader(req);
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -1591,7 +1652,7 @@ export function createServer(config = loadConfig()): RunningServer {
         return;
       }
 
-      await transport.handleRequest(transportReq, res, req.body);
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,

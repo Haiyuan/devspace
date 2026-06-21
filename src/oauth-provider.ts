@@ -96,7 +96,7 @@ function formHtml(params: {
         <dt>Scope</dt><dd>${htmlEscape(scopeText)}</dd>
         <dt>Resource</dt><dd>${htmlEscape(resourceText)}</dd>
       </dl>
-      <form method="post">
+      <form id="auth-form" method="post" action="/authorize">
 ${hiddenFields}
         <label for="owner_token">Owner password</label>
         <input id="owner_token" name="owner_token" type="password" autocomplete="current-password" autofocus required />
@@ -138,10 +138,14 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    const normalizedParams = {
+      ...params,
+      scopes: (params.scopes ?? []).filter(Boolean),
+    };
     if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
       throw new InvalidRequestError("Invalid or missing OAuth resource");
     }
-    if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
+    if (!requestedScopesAllowed(normalizedParams.scopes, this.config.scopes)) {
       throw new InvalidRequestError("Requested scope is not supported");
     }
 
@@ -150,9 +154,9 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       res.send(
         formHtml({
           clientName: client.client_name ?? client.client_id,
-          scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          scopes: normalizedParams.scopes,
+          resource: normalizedParams.resource,
+          fields: authorizationFormFields(client, normalizedParams),
         }),
       );
       return;
@@ -165,9 +169,9 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
         formHtml({
           error: "The Owner password was not accepted.",
           clientName: client.client_name ?? client.client_id,
-          scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          scopes: normalizedParams.scopes,
+          resource: normalizedParams.resource,
+          fields: authorizationFormFields(client, normalizedParams),
         }),
       );
       return;
@@ -176,7 +180,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const code = `code-${randomUUID()}`;
     this.codes.set(code, {
       clientId: client.client_id,
-      params,
+      params: normalizedParams,
       expiresAtMs: Date.now() + CODE_TTL_MS,
     });
 
@@ -192,6 +196,11 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   ): Promise<string> {
     const record = this.validCodeRecord(client, authorizationCode);
     return record.params.codeChallenge;
+  }
+
+  clientIdForAuthorizationCode(authorizationCode: string): string | undefined {
+    const record = this.codes.get(authorizationCode);
+    return record && record.expiresAtMs >= Date.now() ? record.clientId : undefined;
   }
 
   async exchangeAuthorizationCode(
@@ -338,7 +347,7 @@ function authorizationFormFields(
     redirect_uri: params.redirectUri,
     code_challenge: params.codeChallenge,
     code_challenge_method: "S256",
-    scope: params.scopes?.join(" "),
+    scope: params.scopes?.length ? params.scopes.join(" ") : undefined,
     state: params.state,
     resource: params.resource?.href,
   };

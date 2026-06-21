@@ -232,10 +232,25 @@ export class SqliteOAuthStore {
     return registered;
   }
 
-  /** Add a redirect URI to an existing client and persist immediately. */
+  /** Add a redirect URI to an existing client, or auto-register if missing. */
   addRedirectUri(clientId: string, redirectUri: string): boolean {
     const client = this.getClient(clientId);
-    if (!client) return false;
+    if (!client) {
+      const now = Math.floor(Date.now() / 1000);
+      const newClient: OAuthClientInformationFull = {
+        client_id: clientId,
+        client_name: clientId,
+        redirect_uris: [redirectUri],
+        client_id_issued_at: now,
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      };
+      this.database.sqlite
+        .prepare("insert into oauth_clients (client_id, client_json, issued_at) values (?, ?, ?)")
+        .run(clientId, JSON.stringify(newClient), now);
+      return true;
+    }
     if (client.redirect_uris.includes(redirectUri)) return true;
 
     client.redirect_uris.push(redirectUri);

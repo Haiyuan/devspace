@@ -201,6 +201,7 @@ async function testProviderRestartRotationAndRevocation(stateDir: string): Promi
     },
     expiresAtMs: Date.now() + 60_000,
   });
+  assert.equal(firstProvider.clientIdForAuthorizationCode(code), client.client_id);
   const issued = await firstProvider.exchangeAuthorizationCode(
     client,
     code,
