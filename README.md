@@ -1,6 +1,6 @@
 <p align="center">
   <picture>
-    <img src="docs/assets/devspace-logo-light.png" alt="DevSpace logo" width="140">
+    <img src="https://raw.githubusercontent.com/Waishnav/devspace/main/docs/assets/devspace-logo-light.png" alt="DevSpace logo" width="140">
   </picture>
 </p>
 
@@ -14,11 +14,46 @@
   <a href="https://github.com/Waishnav/devspace/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/npm/l/%40waishnav%2Fdevspace?style=flat-square" /></a>
 </p>
 
-[![DevSpace connected to ChatGPT](docs/assets/devspace-screenshot.png)](docs/assets/devspace-screenshot.png)
+[![DevSpace connected to ChatGPT](https://raw.githubusercontent.com/Waishnav/devspace/main/docs/assets/devspace-screenshot.png)](https://raw.githubusercontent.com/Waishnav/devspace/main/docs/assets/devspace-screenshot.png)
 
 **Give ChatGPT a secure connection to your own machine and Turn ChatGPT into Codex**
 
 DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
+
+## Sponsors and Special Thanks
+
+<table>
+  <thead>
+    <tr>
+      <th>Sponsor</th>
+      <th>About</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center" width="220">
+        <a href="https://rebates.ai/">
+          <img
+            src="https://app.rebates.ai/brand/rebates-lockup.svg"
+            alt="Rebates"
+            width="170"
+          >
+        </a>
+      </td>
+      <td>
+        <strong>The ads in your terminal pay you.</strong><br><br>
+        <a href="https://rebates.ai/">Rebates</a> adds one optional
+        sponsored footer to your coding agent and pays you cash back for every
+        session in which it is shown. Turn it off at any time.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<p align="center">
+  DevSpace is open to new sponsors.
+  <a href="https://x.com/wshxnv">Get in touch to become one.</a>
+</p>
 
 ## Installation
 
@@ -134,11 +169,11 @@ devspace doctor
 
 ## Documentation
 
-- [Setup Guide](docs/setup.md)
-- [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
-- [Configuration Reference](docs/configuration.md)
-- [Security Model](docs/security.md)
-- [Troubleshooting Gotchas](docs/gotchas.md)
+- [Setup Guide](https://github.com/Waishnav/devspace/blob/main/docs/setup.md)
+- [ChatGPT Coding Workflow](https://github.com/Waishnav/devspace/blob/main/docs/chatgpt-coding-workflow.md)
+- [Configuration Reference](https://github.com/Waishnav/devspace/blob/main/docs/configuration.md)
+- [Security Model](https://github.com/Waishnav/devspace/blob/main/docs/security.md)
+- [Troubleshooting Gotchas](https://github.com/Waishnav/devspace/blob/main/docs/gotchas.md)
 
 ## Philosophy
 

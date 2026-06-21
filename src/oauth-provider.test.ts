@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
-import { InMemoryOAuthClientsStore } from "./oauth-provider.js";
+import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 import { createServer } from "./server.js";
 
 const originalFetch = globalThis.fetch;
@@ -53,7 +53,7 @@ await withFetch(
     scope: "devspace",
   },
   async () => {
-    const store = new InMemoryOAuthClientsStore(["chatgpt.com"], ["devspace"]);
+    const store = new SqliteOAuthClientsStore(new SqliteOAuthStore(mkdtempSync(join(tmpdir(), "devspace-oauth-test-cimd-"))), ["chatgpt.com"], ["devspace"]);
     const client = await store.getClient("https://chatgpt.com/client-metadata.json");
     assert.equal(client?.client_id, "https://chatgpt.com/client-metadata.json");
     assert.equal(client?.token_endpoint_auth_method, "none");
@@ -61,14 +61,14 @@ await withFetch(
   },
 );
 
-const store = new InMemoryOAuthClientsStore(["chatgpt.com"], ["devspace"]);
+const store = new SqliteOAuthClientsStore(new SqliteOAuthStore(mkdtempSync(join(tmpdir(), "devspace-oauth-test-cimd-"))), ["chatgpt.com"], ["devspace"]);
 await assert.rejects(() => store.getClient("http://chatgpt.com/client.json"), /HTTPS/);
 
 await withFetch(
   { redirect_uris: ["https://example.com/callback"] },
   async () => {
     await assert.rejects(
-      () => new InMemoryOAuthClientsStore(["chatgpt.com"], ["devspace"]).getClient("https://chatgpt.com/bad-redirect.json"),
+      () => new SqliteOAuthClientsStore(new SqliteOAuthStore(mkdtempSync(join(tmpdir(), "devspace-oauth-test-cimd-"))), ["chatgpt.com"], ["devspace"]).getClient("https://chatgpt.com/bad-redirect.json"),
       /redirect_uri/,
     );
   },
@@ -78,7 +78,7 @@ await withFetch(
   { redirect_uris: ["https://chatgpt.com/callback"], scope: "admin" },
   async () => {
     await assert.rejects(
-      () => new InMemoryOAuthClientsStore(["chatgpt.com"], ["devspace"]).getClient("https://chatgpt.com/bad-scope.json"),
+      () => new SqliteOAuthClientsStore(new SqliteOAuthStore(mkdtempSync(join(tmpdir(), "devspace-oauth-test-cimd-"))), ["chatgpt.com"], ["devspace"]).getClient("https://chatgpt.com/bad-scope.json"),
       /scope/,
     );
   },
