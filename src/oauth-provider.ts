@@ -1,5 +1,7 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
 import { isIP } from "node:net";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -270,7 +272,7 @@ function clientFromMetadata(
 }
 
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
-  private readonly clients = new Map<string, OAuthClientInformationFull>();
+  protected readonly clients = new Map<string, OAuthClientInformationFull>();
 
   constructor(
     private readonly allowedRedirectHosts: string[],
@@ -360,6 +362,76 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
   }
 }
 
+const OAUTH_CLIENTS_DDL = `
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id TEXT PRIMARY KEY,
+  data      TEXT NOT NULL
+)`;
+
+/**
+ * SQLite-backed OAuth client store that survives server restarts.
+ *
+ * Extends {@link InMemoryOAuthClientsStore} by persisting every registered
+ * client (and any dynamically-added redirect URIs) to the DevSpace SQLite
+ * database so ChatGPT connectors stay valid across restarts.
+ */
+export class PersistentOAuthClientsStore extends InMemoryOAuthClientsStore {
+  private readonly db: Database.Database;
+  private readonly saveStmt: Database.Statement;
+
+  constructor(
+    stateDir: string,
+    allowedRedirectHosts: string[],
+    supportedScopes: string[],
+  ) {
+    super(allowedRedirectHosts, supportedScopes);
+
+    const dbPath = join(stateDir, "devspace.sqlite");
+    this.db = new Database(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.exec(OAUTH_CLIENTS_DDL);
+
+    this.saveStmt = this.db.prepare(
+      "INSERT OR REPLACE INTO oauth_clients (client_id, data) VALUES (?, ?)",
+    );
+
+    // Restore clients from previous runs
+    const rows = this.db
+      .prepare("SELECT client_id, data FROM oauth_clients")
+      .all() as Array<{ client_id: string; data: string }>;
+    for (const row of rows) {
+      try {
+        const client = JSON.parse(row.data) as OAuthClientInformationFull;
+        this.clients.set(row.client_id, client);
+      } catch {
+        // corrupt row — skip
+      }
+    }
+  }
+
+  override registerClient(
+    client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
+  ): OAuthClientInformationFull {
+    const registered = super.registerClient(client);
+    this.persist(registered.client_id, registered);
+    return registered;
+  }
+
+  override addRedirectUri(clientId: string, redirectUri: string): void {
+    super.addRedirectUri(clientId, redirectUri);
+    const client = this.clients.get(clientId);
+    if (client) this.persist(clientId, client);
+  }
+
+  private persist(clientId: string, client: OAuthClientInformationFull): void {
+    try {
+      this.saveStmt.run(clientId, JSON.stringify(client));
+    } catch {
+      // best-effort — never let a DB write break the OAuth flow
+    }
+  }
+}
+
 export class SingleUserOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: OAuthRegisteredClientsStore;
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
@@ -370,9 +442,12 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   constructor(
     private readonly config: OAuthConfig,
     resourceServerUrl: URL,
+    stateDir?: string,
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts, config.scopes);
+    this.clientsStore = stateDir
+      ? new PersistentOAuthClientsStore(stateDir, config.allowedRedirectHosts, config.scopes)
+      : new InMemoryOAuthClientsStore(config.allowedRedirectHosts, config.scopes);
   }
 
   async authorize(
