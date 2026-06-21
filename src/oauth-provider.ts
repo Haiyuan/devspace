@@ -534,7 +534,13 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     }
 
     this.codes.delete(authorizationCode);
-    return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, record.params.resource);
+    // ChatGPT does not send a scope param, so params.scopes is [].
+    // `[] ?? default` won't fire because [ ] is truthy in JS.
+    const scopes =
+      record.params.scopes && record.params.scopes.length > 0
+        ? record.params.scopes
+        : this.config.scopes;
+    return this.issueTokens(client.client_id, scopes, record.params.resource);
   }
 
   async exchangeRefreshToken(
