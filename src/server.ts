@@ -1390,21 +1390,20 @@ export function createServer(config = loadConfig()): RunningServer {
     }
   });
 
-  // Auto-register ChatGPT dynamic redirect URIs on first use.
-  // ChatGPT generates unique per-connector redirect URIs like
-  //   https://chatgpt.com/connector/oauth/<random-id>
-  // that can't be predicted at client registration time. This
-  // middleware injects the URI into the client's allowlist before
-  // the SDK's authorize handler performs its exact-match check.
+  // ChatGPT-compatibility middleware for /authorize:
+  //   1. Auto-register dynamic redirect URIs on first use
+  //   2. Inject PKCE params when the client omits them (ChatGPT does)
   app.use("/authorize", (req, _res, next) => {
     try {
-      const clientId =
-        (req.query as Record<string, string>).client_id ??
-        (req.body as Record<string, string> | undefined)?.client_id;
-      const redirectUri =
-        (req.query as Record<string, string>).redirect_uri ??
-        (req.body as Record<string, string> | undefined)?.redirect_uri;
+      const params = (
+        req.method === "POST" ? req.body : req.query
+      ) as Record<string, string> | undefined;
+      if (!params) return next();
 
+      const clientId = params.client_id;
+      const redirectUri = params.redirect_uri;
+
+      // Auto-register chatgpt.com redirect URIs
       if (
         clientId &&
         redirectUri &&
@@ -1414,8 +1413,38 @@ export function createServer(config = loadConfig()): RunningServer {
           oauthProvider.clientsStore as InMemoryOAuthClientsStore;
         store.addRedirectUri(clientId, redirectUri);
       }
+
+      // Inject placeholder PKCE params when the client omits them.
+      // ChatGPT does not send PKCE but the SDK requires it.
+      if (!params.code_challenge) {
+        if (req.method === "POST") {
+          req.body = { ...req.body, code_challenge: "chatgpt-no-pkce", code_challenge_method: "S256" };
+        } else {
+          (req.query as Record<string, string>).code_challenge = "chatgpt-no-pkce";
+          (req.query as Record<string, string>).code_challenge_method = "S256";
+        }
+      }
     } catch {
       // best-effort — never block the authorize flow
+    }
+    next();
+  });
+
+  // ChatGPT-compatibility middleware for /token:
+  //   Inject a placeholder code_verifier when the client omits it.
+  //   Must parse the urlencoded body BEFORE the SDK's token handler.
+  app.use("/token", express.urlencoded({ extended: false }), (req, _res, next) => {
+    try {
+      if (
+        req.method === "POST" &&
+        req.body &&
+        !req.body.code_verifier &&
+        req.body.grant_type === "authorization_code"
+      ) {
+        req.body.code_verifier = "chatgpt-no-pkce";
+      }
+    } catch {
+      // best-effort
     }
     next();
   });

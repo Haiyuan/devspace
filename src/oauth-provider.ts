@@ -434,6 +434,13 @@ export class PersistentOAuthClientsStore extends InMemoryOAuthClientsStore {
 
 export class SingleUserOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: OAuthRegisteredClientsStore;
+
+  /**
+   * When true the SDK's token handler skips its built-in PKCE validation
+   * so we can accept clients (e.g. ChatGPT) that don't send PKCE params.
+   */
+  readonly skipLocalPkceValidation = true;
+
   private readonly codes = new Map<string, AuthorizationCodeRecord>();
   private readonly accessTokens = new Map<string, AccessTokenRecord>();
   private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
