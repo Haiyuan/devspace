@@ -1336,7 +1336,7 @@ export function createServer(config = loadConfig()): RunningServer {
   const reviewCheckpoints = createReviewCheckpointManager();
 
   if (config.logging.trustProxy) {
-    app.set("trust proxy", true);
+    app.set("trust proxy", 1);
   }
 
   app.use((req, res, next) => {
@@ -1444,7 +1444,7 @@ export function createServer(config = loadConfig()): RunningServer {
   //   1. Auto-register dynamic redirect URIs on first use
   //   2. Inject PKCE params when the client omits them (ChatGPT does)
   //   3. Inject resource param when the client omits it
-  app.use("/authorize", (req, res, next) => {
+  app.use("/authorize", express.urlencoded({ extended: false }), (req, res, next) => {
     try {
 
       // For GET requests, Express re-parses req.query when entering a Router.
@@ -1530,6 +1530,19 @@ export function createServer(config = loadConfig()): RunningServer {
           req.body.code_verifier = "chatgpt-no-pkce";
         }
       }
+
+      logEvent(config.logging, "info", "oauth_token_probe", {
+        requestId: _res.locals.requestId as string | undefined,
+        method: req.method,
+        grantType: typeof req.body?.grant_type === "string" ? req.body.grant_type : undefined,
+        hasAuthorization: Boolean(req.headers.authorization),
+        hasClientId: Boolean(req.body?.client_id),
+        hasClientSecret: Boolean(req.body?.client_secret),
+        hasCode: Boolean(req.body?.code),
+        hasCodeVerifier: Boolean(req.body?.code_verifier),
+        hasResource: Boolean(req.body?.resource),
+        ...requestLogFields(req, config),
+      });
     } catch {
       // best-effort
     }
@@ -1584,6 +1597,20 @@ export function createServer(config = loadConfig()): RunningServer {
     // Node wrapper rebuilds Web Headers from rawHeaders, so keep both views
     // in sync before handing the request to the transport.
     ensureMcpAcceptHeader(req);
+
+    logEvent(config.logging, "info", "mcp_probe", {
+      requestId,
+      method: req.method,
+      hasAuthorization: Boolean(req.headers.authorization),
+      hasSessionId: Boolean(sessionId),
+      bodyMethod: typeof req.body?.method === "string" ? req.body.method : undefined,
+      isInitialize: initializeRequest,
+      paramsKeys:
+        req.body?.params && typeof req.body.params === "object"
+          ? Object.keys(req.body.params)
+          : undefined,
+      ...requestLogFields(req, config),
+    });
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
