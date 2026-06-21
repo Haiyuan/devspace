@@ -1316,21 +1316,31 @@ export function createServer(config = loadConfig()): RunningServer {
     next();
   });
 
-  app.get("/.well-known/oauth-authorization-server", (_req, res) => {
-    res
-      .status(200)
-      .setHeader("Cache-Control", "no-store")
-      .setHeader("Access-Control-Allow-Origin", "*")
-      .json({
-        ...createOAuthMetadata({
-          provider: oauthProvider,
-          issuerUrl: new URL(config.publicBaseUrl),
-          baseUrl: new URL(config.publicBaseUrl),
-          scopesSupported: config.oauth.scopes,
-        }),
-        client_id_metadata_document_supported: true,
-      });
-  });
+  app.get(
+    [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/openid-configuration",
+    ],
+    (_req, res) => {
+      const metadata = createOAuthMetadata({
+        provider: oauthProvider,
+        issuerUrl: new URL(config.publicBaseUrl),
+        baseUrl: new URL(config.publicBaseUrl),
+        scopesSupported: config.oauth.scopes,
+      }) as any;
+      
+      delete metadata.registration_endpoint;
+
+      res
+        .status(200)
+        .setHeader("Cache-Control", "no-store, max-age=0")
+        .setHeader("Access-Control-Allow-Origin", "*")
+        .json({
+          ...metadata,
+          client_id_metadata_document_supported: true,
+        });
+    },
+  );
 
   app.use(
     mcpAuthRouter({
