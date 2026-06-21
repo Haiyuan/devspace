@@ -301,10 +301,38 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
       throw new InvalidRequestError("Client redirect_uri is not allowed for this DevSpace server");
     }
 
+    // Validate requested scopes against supported scopes
+    const requestedScopes = (client as Record<string, unknown>).scope
+      ? String((client as Record<string, unknown>).scope).split(" ").filter(Boolean)
+      : [];
+    if (!requestedScopesAllowed(requestedScopes, this.supportedScopes)) {
+      throw new InvalidRequestError("Requested scope is not supported");
+    }
+
     const now = Math.floor(Date.now() / 1000);
+
+    // CIMD: if the client provides a client_id URL, validate and use it
+    // DCR:  if no client_id is provided, generate a server-minted one
+    const providedClientId = (client as Record<string, unknown>).client_id as string | undefined;
+    let clientId: string;
+
+    if (providedClientId) {
+      // CIMD flow — client_id must be a valid HTTPS metadata document URL
+      const url = clientMetadataUrl(providedClientId, this.allowedRedirectHosts);
+      if (!url) {
+        throw new InvalidRequestError(
+          "Invalid client_id URL for CIMD registration — must be an HTTPS URL on an allowed host",
+        );
+      }
+      clientId = providedClientId;
+    } else {
+      // DCR flow — generate a server-minted client_id
+      clientId = `devspace-${randomUUID()}`;
+    }
+
     const registered: OAuthClientInformationFull = {
       ...client,
-      client_id: `devspace-${randomUUID()}`,
+      client_id: clientId,
       client_id_issued_at: now,
       token_endpoint_auth_method: client.token_endpoint_auth_method ?? "none",
       grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],

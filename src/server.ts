@@ -9,6 +9,7 @@ import {
   mcpAuthRouter,
   getOAuthProtectedResourceMetadataUrl,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { OAuthClientMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -1340,6 +1341,55 @@ export function createServer(config = loadConfig()): RunningServer {
     },
   );
 
+  // Custom CIMD-aware registration handler
+  // Registered before mcpAuthRouter so it takes priority over the SDK's
+  // DCR-only handler. Supports both:
+  //   - DCR (RFC 7591):  no client_id in body → server mints devspace-<uuid>
+  //   - CIMD:            client_id is an HTTPS URL → server validates & stores
+  app.post("/register", async (req, res) => {
+    try {
+      const schema = OAuthClientMetadataSchema.extend({
+        client_id: z.string().optional(),
+      });
+      const parseResult = schema.safeParse(req.body);
+      if (!parseResult.success) {
+        res.status(400).json({
+          error: "invalid_client_metadata",
+          error_description: parseResult.error.message,
+        });
+        return;
+      }
+
+      const metadata = parseResult.data;
+      const isPublicClient =
+        !metadata.token_endpoint_auth_method ||
+        metadata.token_endpoint_auth_method === "none";
+      const clientSecret = isPublicClient
+        ? undefined
+        : randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+
+      const clientInfo = await oauthProvider.clientsStore.registerClient!({
+        ...metadata,
+        client_secret: clientSecret,
+        client_id: (metadata as Record<string, unknown>).client_id as
+          | string
+          | undefined,
+      } as any);
+
+      res.setHeader("Cache-Control", "no-store");
+      res.status(201).json(clientInfo);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Internal Server Error";
+      const isBadRequest =
+        message.startsWith("Invalid") || message.startsWith("Client");
+      res.status(isBadRequest ? 400 : 500).json({
+        error: isBadRequest ? "invalid_request" : "server_error",
+        error_description: message,
+      });
+    }
+  });
+
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -1352,6 +1402,9 @@ export function createServer(config = loadConfig()): RunningServer {
         // ChatGPT may retry connector creation several times; the SDK default
         // 20/hour DCR limit can make a valid server look RFC7591-incompatible.
         rateLimit: { max: 300 },
+        // Allow client-provided client_id for CIMD; our custom /register
+        // handler above handles both DCR and CIMD flows.
+        clientIdGeneration: false,
       },
     }),
   );
