@@ -1489,24 +1489,40 @@ export function createServer(config = loadConfig()): RunningServer {
     res.json({ ok: true, name: "devspace" });
   });
 
-  // ChatGPT's MCP client does not send the Accept header required by
-  // the MCP Streamable HTTP transport (must include both application/json
-  // and text/event-stream). Inject the missing value so the SDK accepts
-  // the request instead of returning 406 Not Acceptable.
-  app.use("/mcp", (req, _res, next) => {
-    const accept = req.headers.accept;
-    if (!accept || !accept.includes("text/event-stream")) {
-      req.headers.accept = accept
-        ? `${accept}, text/event-stream`
-        : "application/json, text/event-stream";
-    }
-    next();
-  });
-
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
+
+    // ChatGPT does not send the MCP-required Accept header. Node ≥22
+    // freezes req.headers, so we create a wrapper that injects the
+    // required value before the SDK transport reads it.
+    const rawAccept = (req.headers as Record<string, string | undefined>)["accept"];
+    const needsAccept =
+      rawAccept == null || !rawAccept.includes("text/event-stream");
+    const transportReq = needsAccept
+      ? new Proxy(req, {
+          get(target, prop, receiver) {
+            if (prop === "headers") {
+              const h = Reflect.get(target, prop, receiver) as Record<string, string | undefined>;
+              return new Proxy(h, {
+                get(hTarget, hProp) {
+                  if (hProp === "accept" || hProp === "Accept") {
+                    const orig = Reflect.get(hTarget, hProp) as string | undefined;
+                    return orig?.includes("text/event-stream")
+                      ? orig
+                      : orig
+                        ? `${orig}, text/event-stream`
+                        : "application/json, text/event-stream";
+                  }
+                  return Reflect.get(hTarget, hProp);
+                },
+              });
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        })
+      : req;
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -1575,7 +1591,7 @@ export function createServer(config = loadConfig()): RunningServer {
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      await transport.handleRequest(transportReq, res, req.body);
     } catch (error) {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
