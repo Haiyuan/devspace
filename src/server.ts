@@ -1487,6 +1487,20 @@ export function createServer(config = loadConfig()): RunningServer {
     res.json({ ok: true, name: "devspace" });
   });
 
+  // ChatGPT's MCP client does not send the Accept header required by
+  // the MCP Streamable HTTP transport (must include both application/json
+  // and text/event-stream). Inject the missing value so the SDK accepts
+  // the request instead of returning 406 Not Acceptable.
+  app.use("/mcp", (req, _res, next) => {
+    const accept = req.headers.accept;
+    if (!accept || !accept.includes("text/event-stream")) {
+      req.headers.accept = accept
+        ? `${accept}, text/event-stream`
+        : "application/json, text/event-stream";
+    }
+    next();
+  });
+
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
