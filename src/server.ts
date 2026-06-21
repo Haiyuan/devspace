@@ -1328,8 +1328,6 @@ export function createServer(config = loadConfig()): RunningServer {
         baseUrl: new URL(config.publicBaseUrl),
         scopesSupported: config.oauth.scopes,
       }) as any;
-      
-      delete metadata.registration_endpoint;
 
       res
         .status(200)
