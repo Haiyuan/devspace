@@ -39,7 +39,7 @@ import {
   runShellTool,
   writeFileTool,
 } from "./pi-tools.js";
-import { SingleUserOAuthProvider } from "./oauth-provider.js";
+import { InMemoryOAuthClientsStore, SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
@@ -1388,6 +1388,36 @@ export function createServer(config = loadConfig()): RunningServer {
         error_description: message,
       });
     }
+  });
+
+  // Auto-register ChatGPT dynamic redirect URIs on first use.
+  // ChatGPT generates unique per-connector redirect URIs like
+  //   https://chatgpt.com/connector/oauth/<random-id>
+  // that can't be predicted at client registration time. This
+  // middleware injects the URI into the client's allowlist before
+  // the SDK's authorize handler performs its exact-match check.
+  app.use("/authorize", (req, _res, next) => {
+    try {
+      const clientId =
+        (req.query as Record<string, string>).client_id ??
+        (req.body as Record<string, string> | undefined)?.client_id;
+      const redirectUri =
+        (req.query as Record<string, string>).redirect_uri ??
+        (req.body as Record<string, string> | undefined)?.redirect_uri;
+
+      if (
+        clientId &&
+        redirectUri &&
+        redirectUri.startsWith("https://chatgpt.com/connector/oauth/")
+      ) {
+        const store =
+          oauthProvider.clientsStore as InMemoryOAuthClientsStore;
+        store.addRedirectUri(clientId, redirectUri);
+      }
+    } catch {
+      // best-effort — never block the authorize flow
+    }
+    next();
   });
 
   app.use(

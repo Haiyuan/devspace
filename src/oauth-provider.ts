@@ -294,6 +294,23 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
     return client;
   }
 
+  /**
+   * Auto-add a redirect URI to an already-registered client.
+   *
+   * ChatGPT generates unique per-connector redirect URIs like
+   * https://chatgpt.com/connector/oauth/<random-id> that can't be
+   * predicted at registration time. This method allows the authorize
+   * middleware to inject the URI on first use so the SDK's exact-match
+   * check passes.
+   */
+  addRedirectUri(clientId: string, redirectUri: string): void {
+    const client = this.clients.get(clientId);
+    if (!client) return;
+    if (!client.redirect_uris.includes(redirectUri)) {
+      client.redirect_uris.push(redirectUri);
+    }
+  }
+
   registerClient(
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
   ): OAuthClientInformationFull {
