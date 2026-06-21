@@ -1,15 +1,21 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
+import { isIP } from "node:net";
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { AccessDeniedError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type {
-  OAuthClientInformationFull,
-  OAuthTokenRevocationRequest,
-  OAuthTokens,
+import {
+  OAuthClientMetadataSchema,
+  type OAuthClientInformationFull,
+  type OAuthTokenRevocationRequest,
+  type OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+
+const CODE_TTL_MS = 5 * 60 * 1000;
+const CLIENT_METADATA_TIMEOUT_MS = 5_000;
+const CLIENT_METADATA_MAX_BYTES = 64 * 1024;
 
 export interface OAuthConfig {
   ownerToken: string;
@@ -40,8 +46,6 @@ interface RefreshTokenRecord {
   expiresAt: number;
   resource?: URL;
 }
-
-const CODE_TTL_MS = 5 * 60 * 1000;
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -138,13 +142,156 @@ function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boole
   return allowedHosts.includes(parsed.hostname);
 }
 
+function normalizedHost(hostname: string): string {
+  return hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = normalizedHost(hostname);
+  if (host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  return isIP(host) === 4 && host.startsWith("127.");
+}
+
+function hostAllowed(hostname: string, allowedHosts: string[]): boolean {
+  const host = normalizedHost(hostname);
+  return allowedHosts.some((allowed) => normalizedHost(allowed) === host);
+}
+
+function clientMetadataUrl(clientId: string, allowedHosts: string[]): URL | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(clientId);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new InvalidRequestError("Client metadata document URL must use HTTPS");
+  }
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new InvalidRequestError("Client metadata document URL must not include credentials or fragment");
+  }
+  if (isLoopbackHost(parsed.hostname)) {
+    throw new InvalidRequestError("Client metadata document URL host must not be loopback");
+  }
+  if (!hostAllowed(parsed.hostname, allowedHosts)) {
+    throw new InvalidRequestError("Client metadata document URL host is not allowed");
+  }
+
+  return parsed;
+}
+
+async function readLimitedResponse(response: globalThis.Response, maxBytes: number): Promise<string> {
+  if (!response.body) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) {
+      throw new InvalidRequestError("Client metadata document is too large");
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      throw new InvalidRequestError("Client metadata document is too large");
+    }
+    chunks.push(value);
+  }
+
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
+}
+
+async function fetchClientMetadata(url: URL): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CLIENT_METADATA_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new InvalidRequestError("Client metadata document fetch failed");
+    }
+    return JSON.parse(await readLimitedResponse(response, CLIENT_METADATA_MAX_BYTES));
+  } catch (error) {
+    if (error instanceof InvalidRequestError) throw error;
+    throw new InvalidRequestError("Client metadata document is invalid");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function clientFromMetadata(
+  clientId: string,
+  metadata: unknown,
+  allowedRedirectHosts: string[],
+  supportedScopes: string[],
+): OAuthClientInformationFull {
+  const parsed = OAuthClientMetadataSchema.safeParse(metadata);
+  if (!parsed.success) {
+    throw new InvalidRequestError("Client metadata document failed validation");
+  }
+
+  const client = parsed.data;
+  if (!client.redirect_uris.every((uri) => redirectHostAllowed(uri, allowedRedirectHosts))) {
+    throw new InvalidRequestError("Client metadata redirect_uri is not allowed");
+  }
+  if (client.token_endpoint_auth_method && client.token_endpoint_auth_method !== "none") {
+    throw new InvalidRequestError("Client metadata token_endpoint_auth_method must be none");
+  }
+  if (client.grant_types && !client.grant_types.includes("authorization_code")) {
+    throw new InvalidRequestError("Client metadata grant_types must include authorization_code");
+  }
+  if (client.response_types && !client.response_types.includes("code")) {
+    throw new InvalidRequestError("Client metadata response_types must include code");
+  }
+  if (client.scope) {
+    const requestedScopes = client.scope.split(" ").filter(Boolean);
+    if (!requestedScopesAllowed(requestedScopes, supportedScopes)) {
+      throw new InvalidRequestError("Client metadata scope is not supported");
+    }
+  }
+
+  return {
+    ...client,
+    client_id: clientId,
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    token_endpoint_auth_method: "none",
+    grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],
+    response_types: client.response_types ?? ["code"],
+  };
+}
+
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
   private readonly clients = new Map<string, OAuthClientInformationFull>();
 
-  constructor(private readonly allowedRedirectHosts: string[]) {}
+  constructor(
+    private readonly allowedRedirectHosts: string[],
+    private readonly supportedScopes: string[],
+  ) {}
 
-  getClient(clientId: string): OAuthClientInformationFull | undefined {
-    return this.clients.get(clientId);
+  async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    const registered = this.clients.get(clientId);
+    if (registered) return registered;
+
+    const url = clientMetadataUrl(clientId, this.allowedRedirectHosts);
+    if (!url) return undefined;
+
+    const client = clientFromMetadata(
+      clientId,
+      await fetchClientMetadata(url),
+      this.allowedRedirectHosts,
+      this.supportedScopes,
+    );
+    this.clients.set(clientId, client);
+    return client;
   }
 
   registerClient(
@@ -180,7 +327,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     resourceServerUrl: URL,
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
+    this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts, config.scopes);
   }
 
   async authorize(

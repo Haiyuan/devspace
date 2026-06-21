@@ -4,7 +4,11 @@ import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import {
+  createOAuthMetadata,
+  mcpAuthRouter,
+  getOAuthProtectedResourceMetadataUrl,
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -1312,6 +1316,22 @@ export function createServer(config = loadConfig()): RunningServer {
     next();
   });
 
+  app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+    res
+      .status(200)
+      .setHeader("Cache-Control", "no-store")
+      .setHeader("Access-Control-Allow-Origin", "*")
+      .json({
+        ...createOAuthMetadata({
+          provider: oauthProvider,
+          issuerUrl: new URL(config.publicBaseUrl),
+          baseUrl: new URL(config.publicBaseUrl),
+          scopesSupported: config.oauth.scopes,
+        }),
+        client_id_metadata_document_supported: true,
+      });
+  });
+
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -1320,6 +1340,11 @@ export function createServer(config = loadConfig()): RunningServer {
       resourceServerUrl,
       scopesSupported: config.oauth.scopes,
       resourceName: "DevSpace",
+      clientRegistrationOptions: {
+        // ChatGPT may retry connector creation several times; the SDK default
+        // 20/hour DCR limit can make a valid server look RFC7591-incompatible.
+        rateLimit: { max: 300 },
+      },
     }),
   );
 
