@@ -192,6 +192,7 @@ export class SqliteOAuthStore {
   registerClient(
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
     allowedRedirectHosts: string[],
+    allowedCimdHosts?: string[],
   ): OAuthClientInformationFull {
     if (!client.redirect_uris.every((uri) => redirectHostAllowed(String(uri), allowedRedirectHosts))) {
       throw new InvalidRequestError("Client redirect_uri is not allowed for this DevSpace server");
@@ -205,7 +206,8 @@ export class SqliteOAuthStore {
     let clientId: string;
 
     if (providedClientId) {
-      const url = clientMetadataUrl(providedClientId, allowedRedirectHosts);
+      const cimdHosts = allowedCimdHosts ?? allowedRedirectHosts;
+      const url = clientMetadataUrl(providedClientId, cimdHosts);
       if (!url) {
         throw new InvalidRequestError(
           "Invalid client_id URL for CIMD registration — must be an HTTPS URL on an allowed host",
@@ -405,7 +407,11 @@ export class SqliteOAuthClientsStore implements OAuthRegisteredClientsStore {
   registerClient(
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
   ): OAuthClientInformationFull {
-    return this.store.registerClient(client, this.allowedRedirectHosts);
+    return this.store.registerClient(
+      client,
+      this.allowedRedirectHosts,
+      this.allowedCimdHosts,
+    );
   }
 
   addRedirectUri(clientId: string, redirectUri: string): boolean {
