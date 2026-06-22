@@ -1444,7 +1444,43 @@ export function createServer(config = loadConfig()): RunningServer {
   //   1. Auto-register dynamic redirect URIs on first use
   //   2. Inject PKCE params when the client omits them (ChatGPT does)
   //   3. Inject resource param when the client omits it
+  //   4. Convert localhost 302 redirects to HTML page (browsers block
+  //      HTTPS→http://localhost redirects as mixed content)
   app.use("/authorize", express.urlencoded({ extended: false }), (req, res, next) => {
+    // Intercept res.redirect() to convert localhost 302 → HTML page.
+    // Browsers block HTTPS→http://localhost redirects (mixed content);
+    // rendering an HTML page with a clickable link avoids the block.
+    const origRedirect = res.redirect.bind(res);
+    res.redirect = ((...args: [string] | [number, string]) => {
+      const target = typeof args[0] === "string" ? args[0] : (args[1] ?? "");
+      if (
+        target.startsWith("http://localhost") ||
+        target.startsWith("http://127.0.0.1")
+      ) {
+        const safe = target.replace(/"/g, "&quot;");
+        res
+          .status(200)
+          .setHeader("Content-Type", "text/html; charset=utf-8")
+          .send(
+            "<!doctype html><html lang=en><meta charset=utf-8>" +
+              "<title>DevSpace Authorized</title>" +
+              "<style>body{font-family:system-ui,sans-serif;max-width:440px;" +
+              "margin:12vh auto;padding:32px;text-align:center}" +
+              "a{color:#38bdf8;word-break:break-all}</style>" +
+              "<h1>DevSpace Authorized</h1>" +
+              '<p>Click the link to complete the connection:</p>' +
+              `<p><a href="${safe}">Complete OAuth callback</a></p>`,
+          );
+        return;
+      }
+      if (typeof args[0] === "string") {
+        origRedirect(args[0]);
+      } else {
+        origRedirect(args[0], args[1]!);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
     try {
 
       // For GET requests, Express re-parses req.query when entering a Router.
