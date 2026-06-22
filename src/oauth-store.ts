@@ -374,14 +374,17 @@ export class SqliteOAuthClientsStore implements OAuthRegisteredClientsStore {
     private readonly store: SqliteOAuthStore,
     private readonly allowedRedirectHosts: string[],
     private readonly supportedScopes: string[] = [],
+    private readonly allowedCimdHosts: string[] = [],
   ) {}
 
   async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
     const registered = this.store.getClient(clientId);
     if (registered) return registered;
 
-    // CIMD: fetch metadata from the client_id URL
-    const url = clientMetadataUrl(clientId, this.allowedRedirectHosts);
+    // CIMD: fetch metadata from the client_id URL.
+    // CIMD host validation uses allowedCimdHosts, not redirect hosts —
+    // the client_id is a metadata document URL, not a redirect target.
+    const url = clientMetadataUrl(clientId, this.allowedCimdHosts);
     if (!url) return undefined;
 
     const client = clientFromMetadata(

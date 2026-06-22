@@ -18,6 +18,7 @@ export interface OAuthConfig {
   refreshTokenTtlSeconds: number;
   scopes: string[];
   allowedRedirectHosts: string[];
+  allowedCimdHosts: string[];
 }
 
 interface AuthorizationCodeRecord {
@@ -130,6 +131,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       this.oauthStore,
       config.allowedRedirectHosts,
       config.scopes,
+      config.allowedCimdHosts,
     );
   }
 

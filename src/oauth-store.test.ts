@@ -15,6 +15,7 @@ const oauthConfig = {
   refreshTokenTtlSeconds: 2592000,
   scopes: ["devspace"],
   allowedRedirectHosts: ["chatgpt.com"],
+  allowedCimdHosts: ["chatgpt.com", "claude.ai", "anthropic.com"],
 };
 const mcpUrl = new URL("https://agent.example.com/mcp");
 const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";

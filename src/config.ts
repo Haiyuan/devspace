@@ -189,6 +189,11 @@ function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined
       "localhost",
       "127.0.0.1",
     ]),
+    allowedCimdHosts: parseStringList(env.DEVSPACE_OAUTH_ALLOWED_CIMD_HOSTS, [
+      "chatgpt.com",
+      "claude.ai",
+      "anthropic.com",
+    ]),
   };
 }
 
