@@ -183,7 +183,9 @@ async function serve(): Promise<void> {
   const { createServer } = await import("./server.js");
   const config = loadConfig();
   const { app, close } = createServer(config);
-  const httpServer = app.listen(config.port, config.host, () => {
+  const httpServer = app.listen(config.port, config.host);
+  
+  httpServer.on("listening", () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
@@ -193,6 +195,15 @@ async function serve(): Promise<void> {
     }
     console.log("auth: Owner password approval required");
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
+  });
+
+  httpServer.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`error: Port ${config.port} is already in use.`);
+    } else {
+      console.error("Server error:", error);
+    }
+    process.exit(1);
   });
 
   const shutdown = () => {

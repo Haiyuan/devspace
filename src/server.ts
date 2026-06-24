@@ -1750,7 +1750,8 @@ async function isMainModule(): Promise<boolean> {
 
 if (await isMainModule()) {
   const { app, config, close } = createServer();
-  const httpServer = app.listen(config.port, config.host, () => {
+  const httpServer = app.listen(config.port, config.host);
+  httpServer.on("listening", () => {
     console.log(
       `devspace listening on http://${config.host}:${config.port}/mcp`,
     );
@@ -1760,6 +1761,14 @@ if (await isMainModule()) {
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
     console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
+  });
+  httpServer.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`error: Port ${config.port} is already in use.`);
+    } else {
+      console.error("Server error:", error);
+    }
+    process.exit(1);
   });
 
   const shutdown = () => {
