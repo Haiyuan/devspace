@@ -3,3 +3,7 @@ dist/
 releases/
 .env
 *.log
+.guardgit/
+.guardgit-key
+*.pem
+*.key
