@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "./db/client.js";
+import Database from "better-sqlite3";
+import { databasePath, openDatabase } from "./db/client.js";
 import {
   getStateStoreDiagnostics,
   pruneStateStore,
@@ -10,6 +11,7 @@ import {
 } from "./workspace-store.js";
 
 const stateDir = mkdtempSync(join(tmpdir(), "devspace-state-store-test-"));
+const legacyStateDir = mkdtempSync(join(tmpdir(), "devspace-state-store-legacy-test-"));
 const now = new Date("2026-06-26T12:00:00.000Z");
 const oldWorkspaceDate = new Date("2026-05-01T12:00:00.000Z").toISOString();
 const recentWorkspaceDate = new Date("2026-06-25T12:00:00.000Z").toISOString();
@@ -52,6 +54,33 @@ const diagnostics = getStateStoreDiagnostics(stateDir);
 assert.equal(diagnostics.workspaceSessionCount, 2);
 assert.equal(diagnostics.toolIdempotencyKeyCount, 3);
 assert.match(diagnostics.databasePath, /devspace\.sqlite$/);
+
+mkdirSync(legacyStateDir, { recursive: true });
+const legacy = new Database(databasePath(legacyStateDir));
+try {
+  legacy.exec(`
+    create table devspace_schema_migrations (
+      version integer primary key,
+      name text not null,
+      applied_at text not null
+    );
+    insert into devspace_schema_migrations (version, name, applied_at)
+      values (1, 'workspace-state', '2026-01-01T00:00:00.000Z');
+    create table workspace_sessions (
+      id text primary key,
+      root text not null,
+      status text not null default 'active',
+      created_at text not null,
+      last_used_at text not null
+    );
+  `);
+} finally {
+  legacy.close();
+}
+
+const legacyDiagnostics = getStateStoreDiagnostics(legacyStateDir);
+assert.equal(legacyDiagnostics.workspaceSessionCount, 0);
+assert.equal(legacyDiagnostics.toolIdempotencyKeyCount, 0);
 
 const dryRun = pruneStateStore(stateDir, {
   dryRun: true,

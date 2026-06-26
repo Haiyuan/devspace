@@ -17,6 +17,12 @@ const migrations: Migration[] = [
     name: "oauth-state",
     up: migrateOAuthState,
   },
+  {
+    version: 3,
+    name: "workspace-state-compatibility",
+    // ponytail: rerun idempotent workspace DDL for databases that recorded v1 before these tables existed.
+    up: migrateWorkspaceState,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
