@@ -1,10 +1,11 @@
-# DevSpace Resource Refresh Issue: Practical Fix Plan
+# DevSpace Resource Refresh Recovery
 
 Date: 2026-06-26
 
 ## 0. Problem
 
-Observed symptom in ChatGPT / DevSpace tool use:
+A ChatGPT or MCP host can lose a previously discovered direct DevSpace tool
+recipient during a long session. The user-visible symptom is usually similar to:
 
 ```text
 Resource not found: .../write
@@ -12,151 +13,128 @@ Call api_tool.list_resources again to rediscover the currently available tools.
 Use only the direct recipients returned there, in <namespace>.<function> format.
 ```
 
-This usually appears after a tool endpoint such as `DevSpace.write` or `DevSpace.bash` was available earlier, then becomes unavailable during a long session.
+This may happen for tools such as `read`, `write`, `edit`, or `bash` after they
+worked earlier in the same conversation.
 
-## 1. Likely Root Cause
+There are two different recovery cases. Treating them as one case is the main
+operational mistake.
 
-The issue is likely a tool-resource lifecycle problem:
+## 1. Case A: Tool Recipient Refreshed, Server Still Running
 
-- The ChatGPT connector/tool bridge exposes DevSpace functions through resource-backed direct recipients.
-- Those resource links can be refreshed, invalidated, or rebound during the session.
-- The `workspaceId` may still be valid, but the tool endpoint resource URI is stale.
-- The next direct call to `DevSpace.write`, `DevSpace.bash`, etc. fails until the assistant rediscovers the tool schema.
+In this case, only the direct tool recipient is stale. The DevSpace server and
+workspace session are still valid.
 
-## 2. Immediate Workaround
-
-When this happens:
+Expected handling:
 
 ```text
 1. Re-run api_tool.list_resources(paths=["DevSpace"]).
 2. Use the newly returned direct recipients.
-3. Reuse the existing workspaceId if it still works.
-4. Retry the failed operation.
+3. Retry the same request once.
+4. Reuse the same workspaceId.
 ```
 
-Do not reopen the workspace unless the existing `workspaceId` is rejected.
+Do not call `open_workspace` again for this case. Reopening needlessly creates a
+new workspace session and loses useful continuity.
 
-## 3. Recommended Client-Side Fix
+## 2. Case B: MCP Session Expired or Server Restarted
 
-For ChatGPT-side or orchestration-side handling, implement automatic retry:
+In this case, the underlying MCP session is gone. This can happen after DevSpace
+restarts, the connection is recreated, the host reports an unknown or expired MCP
+session, or the `workspaceId` itself is rejected.
+
+Expected handling:
 
 ```text
-on ToolResourceNotFound:
-  if tool namespace was previously discovered:
-    call api_tool.list_resources(paths=["DevSpace"])
-    retry the same operation once with the refreshed direct recipient
-  else:
-    surface the error
+1. Re-run api_tool.list_resources(paths=["DevSpace"]).
+2. Call open_workspace for the same project path again.
+3. Use the newly returned workspaceId for later calls.
+4. Continue from repository state, not from the stale session state.
 ```
 
-Rules:
+This is the correct path after editing DevSpace server code during `npm run dev`,
+because the development server restarts on source changes.
 
-- Retry at most once automatically.
-- Never retry non-idempotent operations blindly unless the operation is safe to repeat.
-- For file writes, retry only if the first write clearly did not execute.
-- For shell commands, retry only if the command is read-only or explicitly idempotent.
-- Preserve `workspaceId`.
-- Preserve the exact intended file path and content.
+## 3. Current Server Behavior
 
-## 4. Recommended DevSpace Server-Side Fix
-
-For the DevSpace project, the robust fix is to make tool discovery and invocation more resilient:
-
-### 4.1 Stable Tool Identity
-
-Tool functions should have stable logical names:
+DevSpace tool descriptions and `open_workspace` instructions now describe both
+recovery paths:
 
 ```text
-DevSpace.open_workspace
-DevSpace.read
-DevSpace.write
-DevSpace.edit
-DevSpace.bash
+Resource not found while DevSpace server is still running:
+  rediscover tools and retry once with the same workspaceId
+
+Server restarted, MCP session unknown/expired, connection recreated, or
+workspaceId rejected:
+  rediscover tools and call open_workspace again
 ```
 
-Even if internal resource URIs rotate, the client should be able to rediscover and bind to the same logical tool name.
-
-### 4.2 Explicit Error Code
-
-Return a structured error code such as:
+For unknown MCP sessions, the server returns structured JSON-RPC error data:
 
 ```json
 {
-  "code": "TOOL_RESOURCE_STALE",
+  "code": "MCP_SESSION_EXPIRED",
   "recoverable": true,
-  "recommended_action": "rediscover_tools"
+  "recommended_action": "rediscover_tools_and_reopen_workspace",
+  "retry_policy": {
+    "rediscoverTools": true,
+    "reopenWorkspace": true,
+    "reuseWorkspaceId": false
+  }
 }
 ```
 
-This is better than a generic `Resource not found`.
+This is intentionally different from ordinary direct-recipient refresh.
 
-### 4.3 Idempotency Keys for Writes
+## 4. Idempotency for Write/Edit Retries
 
-For write/edit operations, support an optional idempotency key:
+`write` and `edit` accept optional `idempotencyKey` values. Use them when a host
+or client can safely derive a stable key for a retryable file operation.
 
-```json
-{
-  "idempotencyKey": "sha256(workspaceId:path:content)"
-}
-```
-
-This allows a client to safely retry a write after a stale resource error without duplicating work.
-
-### 4.4 Keep Workspace State Separate From Tool Resource State
-
-The workspace should remain stable even when tool resources refresh:
+Suggested shape:
 
 ```text
-workspaceId lifetime != direct tool endpoint lifetime
+sha256(workspaceId:path:operation-payload)
 ```
 
-If the workspace is still valid, rediscovery should be enough.
+This helps protect against duplicated writes when a response is lost after the
+operation has already completed.
 
-### 4.5 Add a `tools/version` or `session/status` Endpoint
+Do not blindly retry shell commands. Retry shell only when the command is
+read-only or explicitly idempotent.
 
-Add a lightweight status endpoint that returns:
+## 5. Operator Checklist
 
-```json
-{
-  "serverVersion": "...",
-  "toolSchemaVersion": "...",
-  "workspaceId": "...",
-  "workspaceValid": true,
-  "toolsValid": true
-}
-```
-
-This helps diagnose whether the stale part is the workspace, the tool schema, or the connection.
-
-## 5. Operational Recommendation
-
-For current use:
-
-- Treat this as a recoverable connector/session issue.
-- Do not treat it as a failed repository edit unless the command actually executed.
-- After rediscovery, continue with the same `workspaceId`.
-- For long document writes, prefer generating downloadable files if repeated write endpoint refresh makes repository writes unreliable.
-- For repository changes, keep guardgit pre-run/post-run bracketing.
-
-## 6. Suggested Issue / Patch Text for DevSpace
+When a DevSpace call fails:
 
 ```text
-fix: make tool resource refresh recoverable
-
-DevSpace tool endpoints can become stale during long ChatGPT sessions, producing
-`Resource not found` for previously discovered direct recipients such as write or
-bash. The workspace may still be valid, but the tool resource binding is no
-longer usable.
-
-Proposed changes:
-- Return a structured TOOL_RESOURCE_STALE error with recoverable=true.
-- Keep workspace state independent from tool resource endpoint lifetime.
-- Support rediscovery without requiring open_workspace again.
-- Add optional idempotency keys for write/edit calls.
-- Add a lightweight session/tool status endpoint for diagnostics.
-- Document client behavior: rediscover tools and retry idempotent operations once.
+1. Read the error text.
+2. If it says Resource not found for a tool recipient, rediscover tools.
+3. Retry once with the same workspaceId only if the server did not restart.
+4. If the MCP session is unknown/expired, or DevSpace restarted, reopen workspace.
+5. If a file write/edit may have partially executed, inspect git status and diff before retrying.
+6. Keep guardgit pre-run/post-run bracketing for repository edits.
 ```
+
+## 6. Why This Separation Matters
+
+`workspaceId` lifetime and direct tool endpoint lifetime are not the same thing.
+
+```text
+direct tool endpoint lifetime != workspaceId lifetime != MCP session lifetime
+```
+
+A stale direct recipient can often recover with rediscovery and the same
+workspace. A restarted server or expired MCP session requires a fresh workspace
+open.
 
 ## 7. Bottom Line
 
-Yes, there is a practical solution. The immediate workaround is rediscovery and retry. The proper product fix is stable logical tool identity, structured stale-resource errors, idempotent write retries, and a clear separation between workspace lifetime and tool endpoint lifetime.
+The safe recovery model is:
+
+```text
+Tool recipient stale, server still running:
+  rediscover tools -> retry once -> same workspaceId
+
+Server restart / unknown MCP session / rejected workspaceId:
+  rediscover tools -> open_workspace again -> new workspaceId
+```
