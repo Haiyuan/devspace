@@ -133,6 +133,17 @@ DevSpace gives ChatGPT tools to:
 - discover local agent skills from your skill folders
 - show tool cards and optional change summaries in ChatGPT Apps-compatible hosts
 
+## For AI Agents
+
+Before changing a repository through DevSpace, read:
+
+- [Agent Efficiency Workflow](docs/agent_efficiency.md)
+- [Task Prompt Templates](docs/task_prompts.md)
+- [Operations Runbook](docs/operations.md)
+
+These pages cover the shortest safe workflow, reusable task prompts, recovery
+from stale tools or sessions, and verification commands.
+
 ## Mental Model
 
 DevSpace is remote access to selected local folders.
@@ -171,6 +182,9 @@ devspace doctor
 
 - [Setup Guide](https://github.com/Waishnav/devspace/blob/main/docs/setup.md)
 - [ChatGPT Coding Workflow](https://github.com/Waishnav/devspace/blob/main/docs/chatgpt-coding-workflow.md)
+- [Agent Efficiency Workflow](https://github.com/Waishnav/devspace/blob/main/docs/agent_efficiency.md)
+- [Task Prompt Templates](https://github.com/Waishnav/devspace/blob/main/docs/task_prompts.md)
+- [Documentation Map](https://github.com/Waishnav/devspace/blob/main/docs/documentation_map.md)
 - [Configuration Reference](https://github.com/Waishnav/devspace/blob/main/docs/configuration.md)
 - [Security Model](https://github.com/Waishnav/devspace/blob/main/docs/security.md)
 - [Troubleshooting Gotchas](https://github.com/Waishnav/devspace/blob/main/docs/gotchas.md)

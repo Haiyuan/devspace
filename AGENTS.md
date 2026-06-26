@@ -23,6 +23,9 @@ automatically by `open_workspace` and by later tool calls when the requested pat
 enters a directory with instructions that have not been loaded for that
 workspace.
 
+For efficient repository work, read `docs/agent_efficiency.md` before editing
+and use `docs/task_prompts.md` when preparing repeatable DevSpace tasks.
+
 Core constraints:
 
 - Treat this as remote access to the local machine; security is part of the
