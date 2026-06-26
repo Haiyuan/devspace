@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+import { accessSync, constants, mkdirSync } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
@@ -230,13 +231,59 @@ async function runDoctor(): Promise<void> {
 
   try {
     const config = loadConfig();
-    console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
+    console.log(`Local MCP URL: ${localHttpUrl(config.host, config.port, "/mcp")}`);
+    console.log(`Local health URL: ${localHttpUrl(config.host, config.port, "/healthz")}`);
+    console.log(`Local readiness URL: ${localHttpUrl(config.host, config.port, "/readyz")}`);
     console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
+    console.log(`State dir: ${config.stateDir}`);
+    console.log(`State dir writable: ${directoryWritableStatus(config.stateDir)}`);
+    console.log(`Worktree root: ${config.worktreeRoot}`);
+    console.log(`Worktree root writable: ${directoryWritableStatus(config.worktreeRoot)}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+    for (const warning of configWarnings(files, config)) {
+      console.log(`Warning: ${warning}`);
+    }
   } catch (error) {
     console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function directoryWritableStatus(path: string): string {
+  try {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    accessSync(path, constants.R_OK | constants.W_OK);
+    return "ok";
+  } catch (error) {
+    return `unavailable (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
+
+function localHttpUrl(host: string, port: number, path: string): string {
+  const publicHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const formattedHost = publicHost.includes(":") && !publicHost.startsWith("[")
+    ? `[${publicHost}]`
+    : publicHost;
+  return `http://${formattedHost}:${port}${path}`;
+}
+
+function configWarnings(files: ReturnType<typeof loadDevspaceFiles>, config: ReturnType<typeof loadConfig>): string[] {
+  const warnings: string[] = [];
+  const publicBaseHost = new URL(config.publicBaseUrl).hostname;
+
+  if (config.allowedHosts.includes("*")) {
+    warnings.push("Host header allowlist is disabled because DEVSPACE_ALLOWED_HOSTS=*");
+  } else if (!config.allowedHosts.includes(publicBaseHost)) {
+    warnings.push(`publicBaseUrl host ${publicBaseHost} is not covered by allowedHosts`);
+  }
+
+  for (const root of files.config.allowedRoots ?? []) {
+    if (root.includes(",")) {
+      warnings.push(`allowedRoots config entry contains a comma and will be treated as one path: ${root}`);
+    }
+  }
+
+  return warnings;
 }
 
 function runConfigCommand(args: string[]): void {

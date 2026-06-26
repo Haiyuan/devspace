@@ -41,6 +41,16 @@ Expected response:
 `/healthz` means the process is alive. It does not prove OAuth, Cloudflare
 Tunnel, MCP session state, or a particular workspace is healthy.
 
+DevSpace also exposes a readiness endpoint:
+
+```bash
+curl http://127.0.0.1:7676/readyz
+```
+
+`/readyz` checks non-sensitive local readiness only: loaded config, writable
+state directory, SQLite store initialization, and UI asset availability. It
+returns HTTP 200 when ready and HTTP 503 when one or more checks fail.
+
 ## 3. Doctor Command
 
 Use doctor for local runtime and configuration inspection:
@@ -50,8 +60,9 @@ npx @waishnav/devspace doctor
 ```
 
 Doctor reports configuration paths, Node version and ABI, platform, Git, Bash,
-SQLite native dependency status, local/public MCP URLs, allowed roots, and allowed
-hosts.
+SQLite native dependency status, local/public MCP URLs, `/healthz` and `/readyz`
+URLs, state/worktree paths, writable checks, allowed roots, allowed hosts, and
+configuration warnings.
 
 If `better-sqlite3` cannot load after changing Node versions, rebuild it under
 the active Node runtime:

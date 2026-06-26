@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -40,6 +40,7 @@ import {
   writeFileTool,
 } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
+import { openDatabase } from "./db/client.js";
 import { SqliteOAuthClientsStore } from "./oauth-store.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
@@ -504,6 +505,67 @@ async function assertWorkspaceAppAssets(): Promise<void> {
   for (const candidate of candidates) {
     await access(candidate);
   }
+}
+
+export interface ReadinessReport {
+  ok: boolean;
+  name: "devspace";
+  checks: {
+    configLoaded: boolean;
+    stateDirWritable: boolean;
+    sqlite: boolean;
+    uiAssets: boolean;
+  };
+}
+
+export interface ReadinessCheckers {
+  stateDirWritable(): boolean | Promise<boolean>;
+  sqlite(): boolean | Promise<boolean>;
+  uiAssets(): boolean | Promise<boolean>;
+}
+
+async function booleanCheck(check: () => boolean | Promise<boolean>): Promise<boolean> {
+  try {
+    return Boolean(await check());
+  } catch {
+    return false;
+  }
+}
+
+async function stateDirWritable(stateDir: string): Promise<boolean> {
+  await access(stateDir, constants.R_OK | constants.W_OK);
+  return true;
+}
+
+function sqliteStoreReady(stateDir: string): boolean {
+  const database = openDatabase(stateDir);
+  database.close();
+  return true;
+}
+
+export async function createReadinessReport(
+  config: ServerConfig,
+  checkers: ReadinessCheckers = {
+    stateDirWritable: () => stateDirWritable(config.stateDir),
+    sqlite: () => sqliteStoreReady(config.stateDir),
+    uiAssets: async () => {
+      await assertWorkspaceAppAssets();
+      return true;
+    },
+  },
+): Promise<ReadinessReport> {
+  const checks = {
+    configLoaded: true,
+    stateDirWritable: await booleanCheck(checkers.stateDirWritable),
+    sqlite: await booleanCheck(checkers.sqlite),
+    uiAssets: await booleanCheck(checkers.uiAssets),
+  };
+
+  return {
+    ok: Object.values(checks).every(Boolean),
+    name: "devspace",
+    checks,
+  };
 }
 
 function createMcpServer(
@@ -1697,6 +1759,11 @@ export function createServer(config = loadConfig()): RunningServer {
 
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true, name: "devspace" });
+  });
+
+  app.get("/readyz", async (_req, res) => {
+    const report = await createReadinessReport(config);
+    res.status(report.ok ? 200 : 503).json(report);
   });
 
   app.all("/mcp", async (req, res) => {
