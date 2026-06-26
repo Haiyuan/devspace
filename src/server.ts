@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants, readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -191,27 +192,78 @@ function toolNamesFor(config: ServerConfig): ToolNames {
       };
 }
 
+const WORKSPACE_GUIDE_PATHS = [
+  "docs/agent_efficiency.md",
+  "docs/task_prompts.md",
+  "docs/documentation_map.md",
+];
+
 function resourceRefreshRecoveryNote(toolNames: ToolNames): string {
-  return `If the host reports "Resource not found" for a DevSpace tool while the DevSpace server is still running, rediscover DevSpace tools and retry the same request once with the same workspaceId. If the DevSpace server restarted, the MCP session is unknown or expired, the connection was recreated, or the workspaceId itself is rejected, rediscover tools and call ${toolNames.openWorkspace} again before continuing.`;
+  return `Recovery: if a DevSpace tool reports "Resource not found" while the server is still running, rediscover DevSpace tools and retry the same request once with the same workspaceId. If the server restarted, the MCP session is unknown or expired, the connection was recreated, or the workspaceId is rejected, rediscover tools and call ${toolNames.openWorkspace} again.`;
 }
 
 function serverInstructions(config: ServerConfig, toolNames: ToolNames): string {
   const inspection = config.minimalTools
-    ? `In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use ${toolNames.shell} with command-line tools such as grep, rg, find, ls, and tree for search and directory inspection. `
-    : `Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. `;
+    ? `Minimal mode disables ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls}; use ${toolNames.shell} with grep, rg, find, ls, or tree for search and directory inspection.`
+    : `Use ${toolNames.read} for direct file reads; use ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} to narrow broad inspection.`;
 
   const skills = config.skillsEnabled
-    ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
+    ? `If ${toolNames.openWorkspace} returns matching skills, read the skill path with ${toolNames.read} before proceeding.`
     : "";
-
-  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
   const showChanges =
     config.widgets === "changes"
-      ? " After creating, editing, or overwriting files, call show_changes once after the related file changes are complete so the user can see the aggregate diff."
+      ? "After file changes, call show_changes once for the aggregate diff."
       : "";
 
-  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${showChanges} ${resourceRefreshRecoveryNote(toolNames)}`;
+  return [
+    `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree, then reuse the workspaceId until switching folders/worktrees, changing checkout/worktree mode, receiving an unknown workspaceId, or being asked to reopen.`,
+    `Tool choice: ${toolNames.read}=direct inspection; ${toolNames.edit}=targeted exact replacements; ${toolNames.write}=new files or full rewrites; ${toolNames.shell}=tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not edit files with ${toolNames.shell}.`,
+    `After ${toolNames.openWorkspace}, follow returned agentsFiles, availableAgentsFiles, skills, and workspace guidance.`,
+    skills,
+    inspection,
+    showChanges,
+    resourceRefreshRecoveryNote(toolNames),
+  ].filter(Boolean).join(" ");
+}
+
+async function existingWorkspaceGuidePaths(root: string): Promise<string[]> {
+  const existing: string[] = [];
+
+  for (const docPath of WORKSPACE_GUIDE_PATHS) {
+    try {
+      await access(join(root, docPath), constants.R_OK);
+      existing.push(docPath);
+    } catch {
+      // Optional workspace guidance docs may not exist in every opened project.
+    }
+  }
+
+  return existing;
+}
+
+function workspaceInstruction(
+  config: ServerConfig,
+  toolNames: ToolNames,
+  guidePaths: string[],
+): string {
+  const nestedInstructions =
+    "Follow loaded agentsFiles instructions. Before working under paths listed in availableAgentsFiles, read those instruction files.";
+  const skills = config.skillsEnabled
+    ? "If a task matches a returned skill, read that skill path before proceeding."
+    : "";
+  const guideReferences = guidePaths.length > 0
+    ? `Workspace references: ${guidePaths.join(", ")}.`
+    : "";
+
+  return [
+    `Use this workspaceId for this project. Do not call ${toolNames.openWorkspace} again unless it stops working, the user asks to reopen, or you switch folder/worktree.`,
+    `Fastest safe workflow: inspect with ${toolNames.read}; make targeted existing-file changes with ${toolNames.edit}; use ${toolNames.write} for new files or complete rewrites; use ${toolNames.shell} for tests, builds, git inspection, search, and read-only shell inspection, not file edits.`,
+    nestedInstructions,
+    skills,
+    guideReferences,
+    resourceRefreshRecoveryNote(toolNames),
+  ].filter(Boolean).join(" ");
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -662,7 +714,7 @@ function createMcpServer(
     {
       title: "Open workspace",
       description:
-        `Open a local project directory as a coding workspace. Call this once per project folder or worktree before reading, editing, searching, writing, showing changes, or running commands. Reuse the returned workspaceId for later calls in the same folder; do not call open_workspace again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. By default this opens the actual checkout; set mode=\"worktree\" when the user asks for an isolated or parallel coding session. Returns a workspaceId, loaded root project instructions, and nested instruction file paths the model should read before working in those directories. ${resourceRefreshRecoveryNote(toolNames)}`,
+        `Open a local project directory as a coding workspace. Use once per project folder or worktree, then reuse the returned workspaceId until switching folders/worktrees, changing checkout/worktree mode, receiving an unknown workspaceId, or being asked to reopen. Defaults to the actual checkout; set mode=\"worktree\" for an isolated managed worktree. Returns workspace instructions, loaded instruction files, nested instruction paths, and matching skills.`,
       inputSchema: {
         path: z
           .string()
@@ -727,9 +779,8 @@ function createMcpServer(
       const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
-      const instruction = config.skillsEnabled
-        ? `Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding. ${resourceRefreshRecoveryNote(toolNames)}`
-        : `Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. ${resourceRefreshRecoveryNote(toolNames)}`;
+      const guidePaths = await existingWorkspaceGuidePaths(workspace.root);
+      const instruction = workspaceInstruction(config, toolNames, guidePaths);
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
@@ -797,12 +848,11 @@ function createMcpServer(
       title: "Read file",
       description:
         [
-          "Read a file inside an open workspace. Use this for file inspection instead of shell commands like cat or sed. Call open_workspace first and pass workspaceId.",
-          "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
+          "Inspect a file inside an open workspace. Prefer this over shell commands like cat or sed for direct file reads.",
+          "Use it for project instruction files returned by open_workspace before working in nested directories.",
           config.skillsEnabled
-            ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."
+            ? "Use it for advertised skill paths when a returned skill matches the task."
             : "",
-          resourceRefreshRecoveryNote(toolNames),
         ]
           .filter(Boolean)
           .join(" "),
@@ -894,7 +944,7 @@ function createMcpServer(
     {
       title: "Write file",
       description:
-        `Create or completely overwrite a file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files. Call open_workspace first and pass workspaceId. ${resourceRefreshRecoveryNote(toolNames)}`,
+        `Create a new file or completely overwrite an existing file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -984,7 +1034,7 @@ function createMcpServer(
     {
       title: "Edit file",
       description:
-        `Edit one file inside an open workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId. ${resourceRefreshRecoveryNote(toolNames)}`,
+        `Edit one existing file inside an open workspace with targeted exact-text replacements. Prefer this over ${toolNames.write} for small changes. Each oldText must match a unique, non-overlapping region; merge nearby changes into one edit when practical.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1365,8 +1415,8 @@ function createMcpServer(
     {
       title: config.toolNaming === "short" ? "Bash" : "Run shell",
       description: config.minimalTools
-        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication. ${resourceRefreshRecoveryNote(toolNames)}`
-        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication. ${resourceRefreshRecoveryNote(toolNames)}`,
+        ? `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, file discovery, and read-only shell inspection. Minimal mode disables ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls}; use grep, rg, find, ls, or tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. This is powerful local execution and should only be exposed behind strong authentication.`
+        : `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. This is powerful local execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: z
           .string()
