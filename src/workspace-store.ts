@@ -1,5 +1,5 @@
 import { eq, and } from "drizzle-orm";
-import { openDatabase, type DatabaseHandle } from "./db/client.js";
+import { databasePath, openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
   workspaceSessions,
   toolIdempotencyKeys,
@@ -19,6 +19,29 @@ export interface WorkspaceSession {
   managed: boolean;
   createdAt: string;
   lastUsedAt: string;
+}
+
+export interface StateStoreDiagnostics {
+  databasePath: string;
+  workspaceSessionCount: number;
+  toolIdempotencyKeyCount: number;
+}
+
+export interface StateStorePruneOptions {
+  workspaceDays?: number;
+  idempotencyDays?: number;
+  dryRun?: boolean;
+  now?: Date;
+}
+
+export interface StateStorePruneResult {
+  dryRun: boolean;
+  workspaceDays: number;
+  idempotencyDays: number;
+  workspaceCutoffIso: string;
+  idempotencyCutoffMs: number;
+  deletedWorkspaceSessions: number;
+  deletedToolIdempotencyKeys: number;
 }
 
 export interface WorkspaceStore {
@@ -143,6 +166,102 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
 export function createWorkspaceStore(stateDir: string): WorkspaceStore {
   return new SqliteWorkspaceStore(stateDir);
+}
+
+export function getStateStoreDiagnostics(stateDir: string): StateStoreDiagnostics {
+  const database = openDatabase(stateDir);
+  try {
+    return {
+      databasePath: databasePath(stateDir),
+      workspaceSessionCount: countRows(database, "workspace_sessions"),
+      toolIdempotencyKeyCount: countRows(database, "tool_idempotency_keys"),
+    };
+  } finally {
+    database.close();
+  }
+}
+
+export function pruneStateStore(
+  stateDir: string,
+  options: StateStorePruneOptions = {},
+): StateStorePruneResult {
+  const workspaceDays = options.workspaceDays ?? 30;
+  const idempotencyDays = options.idempotencyDays ?? 7;
+  validatePositiveDays(workspaceDays, "workspaceDays");
+  validatePositiveDays(idempotencyDays, "idempotencyDays");
+
+  const nowMs = options.now?.getTime() ?? Date.now();
+  const workspaceCutoffIso = new Date(nowMs - workspaceDays * 24 * 60 * 60 * 1000).toISOString();
+  const idempotencyCutoffMs = nowMs - idempotencyDays * 24 * 60 * 60 * 1000;
+  const dryRun = Boolean(options.dryRun);
+  const database = openDatabase(stateDir);
+
+  try {
+    const deletedWorkspaceSessions = countStaleWorkspaceSessions(database, workspaceCutoffIso);
+    const deletedToolIdempotencyKeys = countPrunedIdempotencyKeys(
+      database,
+      idempotencyCutoffMs,
+      workspaceCutoffIso,
+    );
+
+    if (!dryRun) {
+      database.sqlite
+        .prepare("delete from tool_idempotency_keys where created_at < ?")
+        .run(idempotencyCutoffMs);
+      database.sqlite
+        .prepare("delete from workspace_sessions where last_used_at < ?")
+        .run(workspaceCutoffIso);
+    }
+
+    return {
+      dryRun,
+      workspaceDays,
+      idempotencyDays,
+      workspaceCutoffIso,
+      idempotencyCutoffMs,
+      deletedWorkspaceSessions,
+      deletedToolIdempotencyKeys,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function countRows(database: DatabaseHandle, table: "workspace_sessions" | "tool_idempotency_keys"): number {
+  const row = database.sqlite.prepare(`select count(*) as count from ${table}`).get() as { count: number };
+  return row.count;
+}
+
+function countStaleWorkspaceSessions(database: DatabaseHandle, workspaceCutoffIso: string): number {
+  const row = database.sqlite
+    .prepare("select count(*) as count from workspace_sessions where last_used_at < ?")
+    .get(workspaceCutoffIso) as { count: number };
+  return row.count;
+}
+
+function countPrunedIdempotencyKeys(
+  database: DatabaseHandle,
+  idempotencyCutoffMs: number,
+  workspaceCutoffIso: string,
+): number {
+  const row = database.sqlite
+    .prepare(
+      [
+        "select count(*) as count from tool_idempotency_keys",
+        "where created_at < ?",
+        "or workspace_session_id in (",
+        "  select id from workspace_sessions where last_used_at < ?",
+        ")",
+      ].join(" "),
+    )
+    .get(idempotencyCutoffMs, workspaceCutoffIso) as { count: number };
+  return row.count;
+}
+
+function validatePositiveDays(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
 }
 
 function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {

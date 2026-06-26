@@ -7,6 +7,7 @@ import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
 import { loadConfig } from "./config.js";
+import { getStateStoreDiagnostics, pruneStateStore } from "./workspace-store.js";
 import {
   generateOwnerToken,
   loadDevspaceFiles,
@@ -16,7 +17,7 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "help" | "version";
+type Command = "serve" | "init" | "doctor" | "config" | "maintenance" | "help" | "version";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
@@ -40,6 +41,9 @@ async function main(argv: string[]): Promise<void> {
     case "config":
       runConfigCommand(args);
       return;
+    case "maintenance":
+      runMaintenanceCommand(args);
+      return;
     case "help":
       printHelp();
       return;
@@ -51,7 +55,7 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "maintenance") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   if (command === "version" || command === "--version" || command === "-v") return "version";
   throw new Error(`Unknown command: ${command}`);
@@ -241,6 +245,14 @@ async function runDoctor(): Promise<void> {
     console.log(`Worktree root writable: ${directoryWritableStatus(config.worktreeRoot)}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+    try {
+      const state = getStateStoreDiagnostics(config.stateDir);
+      console.log(`State DB path: ${state.databasePath}`);
+      console.log(`Workspace sessions: ${state.workspaceSessionCount}`);
+      console.log(`Tool idempotency keys: ${state.toolIdempotencyKeyCount}`);
+    } catch (error) {
+      console.log(`State store status: unavailable (${error instanceof Error ? error.message : String(error)})`);
+    }
     for (const warning of configWarnings(files, config)) {
       console.log(`Warning: ${warning}`);
     }
@@ -286,6 +298,65 @@ function configWarnings(files: ReturnType<typeof loadDevspaceFiles>, config: Ret
   return warnings;
 }
 
+function runMaintenanceCommand(args: string[]): void {
+  const [subcommand, ...rest] = args;
+  if (subcommand !== "prune") {
+    throw new Error("Only `devspace maintenance prune` is supported right now.");
+  }
+
+  const options = parseMaintenancePruneOptions(rest);
+  const config = loadConfig();
+  const result = pruneStateStore(config.stateDir, options);
+
+  console.log(`${result.dryRun ? "Would prune" : "Pruned"} DevSpace state store.`);
+  console.log(`Workspace session TTL days: ${result.workspaceDays}`);
+  console.log(`Tool idempotency key TTL days: ${result.idempotencyDays}`);
+  console.log(`Workspace session cutoff: ${result.workspaceCutoffIso}`);
+  console.log(`Tool idempotency key cutoff: ${new Date(result.idempotencyCutoffMs).toISOString()}`);
+  console.log(`Workspace sessions ${result.dryRun ? "would delete" : "deleted"}: ${result.deletedWorkspaceSessions}`);
+  console.log(`Tool idempotency keys ${result.dryRun ? "would delete" : "deleted"}: ${result.deletedToolIdempotencyKeys}`);
+  console.log("OAuth clients, grants, and tokens are not pruned by this command.");
+}
+
+function parseMaintenancePruneOptions(args: string[]): {
+  dryRun: boolean;
+  workspaceDays: number;
+  idempotencyDays: number;
+} {
+  const options = {
+    dryRun: false,
+    workspaceDays: 30,
+    idempotencyDays: 7,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    switch (arg) {
+      case "--dry-run":
+        options.dryRun = true;
+        break;
+      case "--workspace-days":
+        options.workspaceDays = parsePositiveCliInteger(args[++index], "--workspace-days");
+        break;
+      case "--idempotency-days":
+        options.idempotencyDays = parsePositiveCliInteger(args[++index], "--idempotency-days");
+        break;
+      default:
+        throw new Error(`Unknown maintenance prune option: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parsePositiveCliInteger(value: string | undefined, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${flag} requires a positive integer.`);
+  }
+  return parsed;
+}
+
 function runConfigCommand(args: string[]): void {
   const [subcommand, key, ...rest] = args;
   const files = loadDevspaceFiles();
@@ -324,6 +395,8 @@ function printHelp(): void {
       "  devspace serve           Start the server",
       "  devspace init            Create or update ~/.devspace/config.json and auth.json",
       "  devspace doctor          Show config, runtime, and native dependency status",
+      "  devspace maintenance prune [--dry-run] [--workspace-days <n>] [--idempotency-days <n>]",
+      "                           Prune stale workspace/idempotency state only",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace -v, --version   Print the installed version",

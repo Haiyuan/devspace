@@ -159,7 +159,44 @@ guardgit scan --all
 `guardgit verify` is useful only when this repository has configured Guardgit
 verification commands.
 
-## 7. Cloudflare Tunnel and OAuth Symptoms
+## 7. State Store Maintenance
+
+`devspace doctor` reports aggregate state-store diagnostics:
+
+```text
+State DB path: .../devspace.sqlite
+Workspace sessions: <count>
+Tool idempotency keys: <count>
+```
+
+It does not print tokens, session IDs, workspace roots, idempotency keys, or
+stored tool payloads.
+
+Prune stale workspace and idempotency state with:
+
+```bash
+npx @waishnav/devspace maintenance prune --dry-run
+npx @waishnav/devspace maintenance prune
+```
+
+Defaults:
+
+```text
+workspace_sessions older than 30 days
+tool_idempotency_keys older than 7 days
+```
+
+Override TTLs when needed:
+
+```bash
+npx @waishnav/devspace maintenance prune --workspace-days 45 --idempotency-days 14
+```
+
+`--dry-run` reports what would be deleted without deleting anything. The command
+only prunes `workspace_sessions` and `tool_idempotency_keys`. It does not remove
+OAuth clients, grants, access tokens, refresh tokens, or authorization codes.
+
+## 8. Cloudflare Tunnel and OAuth Symptoms
 
 If ChatGPT cannot connect or create the connector:
 
@@ -176,7 +213,7 @@ If ChatGPT cannot connect or create the connector:
 If DCR or CIMD fails, check that `/register` and the well-known OAuth metadata
 paths are not blocked by proxy, geo, firewall, or custom WAF rules.
 
-## 8. Allowed Roots Gotcha
+## 9. Allowed Roots Gotcha
 
 In JSON config, allowed roots must be separate array entries:
 
@@ -201,7 +238,7 @@ Do not put comma-separated paths inside one array entry:
 
 That is one invalid root string, not two roots.
 
-## 9. When to Restart DevSpace
+## 10. When to Restart DevSpace
 
 Restart DevSpace after changing server source, configuration, dependencies, or
 Node runtime. After restart, clients should rediscover tools and call
