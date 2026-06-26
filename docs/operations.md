@@ -246,3 +246,14 @@ Node runtime. After restart, clients should rediscover tools and call
 
 Do not assume an old MCP session or old `workspaceId` is still valid after a
 server restart.
+
+## 11. Agent Prompt Pack and Documentation Map
+
+For efficient AI-agent operation, use:
+
+- `docs/agent_efficiency.md` for the fastest safe DevSpace workflow.
+- `docs/task_prompts.md` for copy-paste-ready task prompts.
+- `docs/documentation_map.md` to choose the first document for a task.
+
+Keep this runbook focused on operations. Do not duplicate large sections from the
+agent workflow or prompt pack here.

@@ -140,9 +140,11 @@ Before changing a repository through DevSpace, read:
 - [Agent Efficiency Workflow](docs/agent_efficiency.md)
 - [Task Prompt Templates](docs/task_prompts.md)
 - [Operations Runbook](docs/operations.md)
+- [Documentation Map](docs/documentation_map.md)
 
 These pages cover the shortest safe workflow, reusable task prompts, recovery
-from stale tools or sessions, and verification commands.
+from stale tools or sessions, verification commands, and which document to read
+first for each task.
 
 ## Mental Model
 

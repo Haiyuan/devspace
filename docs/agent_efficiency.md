@@ -1,24 +1,27 @@
 # Agent Efficiency Workflow
 
-Use this page when an AI agent is working through DevSpace and needs the fastest
-safe path from request to verified diff.
+Use this page when an AI agent is working through DevSpace and needs the
+shortest safe path from request to verified diff.
 
 ## Fast Safe Loop
 
-1. Open the workspace once for the target checkout or worktree.
-2. Read `AGENTS.md` and any nested instruction files returned by
-   `open_workspace` before editing under those paths.
-3. Run the pre-edit gate:
+1. Call `open_workspace` once for the target repository checkout or managed
+   worktree.
+2. Reuse the returned `workspaceId` for later `read`, `edit`, `write`, and
+   `bash` calls in that same workspace.
+3. Read `AGENTS.md` and any nested instruction files returned by DevSpace before
+   editing under those paths.
+4. Inspect the relevant files before editing. Do not edit from memory.
+5. Run the pre-edit gate:
 
    ```bash
    guardgit agent pre-run --json
    ```
 
-4. Inspect only the files and symbols needed for the task.
-5. Make the smallest focused change.
-6. Run the narrowest useful verification first, then broader checks when the
-   task requires them.
-7. Inspect the diff and run the post-edit gate:
+6. Make the smallest focused change that satisfies the task.
+7. Run the narrowest useful verification first, then broader checks required by
+   the task.
+8. Inspect the diff and run the post-edit gate:
 
    ```bash
    guardgit agent post-run --json
@@ -29,22 +32,42 @@ destructive repository cleanup as part of a normal DevSpace task.
 
 ## Tool Choice
 
-Use `read` for direct file inspection. Prefer it over shell commands such as
-`cat` or `sed` when the path is known.
+Use `read` for direct file inspection when the path is known. Prefer it over
+shell commands such as `cat` or `sed`.
 
-Use search tools or read-only shell commands for discovery. `rg`, `find`, `git
-status`, `git diff`, and package-script inspection are good shell uses.
+Use `bash` for tests, builds, Git inspection, package scripts, search, and
+read-only repository discovery. Good examples include `npm test`, `npm run
+verify`, `git status`, `git diff`, `rg`, and `find`.
 
-Use `edit` for targeted changes to existing files. Keep replacement blocks small
-but unique. Combine nearby edits when that reduces churn.
+Do not use `bash` to edit files. Avoid shell redirection, heredocs, `tee`,
+`sed -i`, `perl -i`, generated scripts, or one-off `node`/`python` scripts that
+write project files. Use DevSpace file tools instead.
 
-Use `write` for new files or complete rewrites only. Do not use it for small
+Use `edit` for targeted changes to existing files. Keep each replacement block
+small but unique. Combine nearby replacements when that reduces churn.
+
+Use `write` only for new files or complete rewrites. Do not use it for small
 patches to existing files.
 
-Use `bash` for tests, builds, Git inspection, package scripts, and read-only
-repository discovery. Do not use shell redirection, heredocs, in-place editing
-commands, or generated scripts to create or modify project files; use `edit` or
-`write` instead.
+## Guardgit Gates
+
+Before any edit or write, run:
+
+```bash
+guardgit agent pre-run --json
+```
+
+Proceed only when the result is pass/ready, or when a warning is understood,
+low-risk, and consistent with the user's request. Stop on blocked states.
+
+After edits and verification, run:
+
+```bash
+guardgit agent post-run --json
+```
+
+Treat Guardgit as a safety gate and evidence recorder. It does not replace
+reading files, inspecting diffs, running project tests, or applying judgment.
 
 ## Recovery Paths
 
@@ -96,6 +119,8 @@ guardgit scan --all
 guardgit agent post-run --json
 ```
 
-For documentation-only changes, still run `git diff --check`, the relevant npm
-verification requested by the task, secret scanning, and the Guardgit post-run
-gate.
+`npm run verify` runs the test suite and TypeScript typecheck. `npm run
+verify:full` adds the production build.
+
+For documentation-only changes, still run the verification requested by the task,
+`git diff --check`, `guardgit scan --all`, and the Guardgit post-run gate.
