@@ -191,7 +191,7 @@ function toolNamesFor(config: ServerConfig): ToolNames {
 }
 
 function resourceRefreshRecoveryNote(toolNames: ToolNames): string {
-  return `If the host reports "Resource not found" for a DevSpace tool, rediscover DevSpace tools and retry the same request once with the same workspaceId; do not call ${toolNames.openWorkspace} again unless the workspaceId itself is rejected as unknown.`;
+  return `If the host reports "Resource not found" for a DevSpace tool while the DevSpace server is still running, rediscover DevSpace tools and retry the same request once with the same workspaceId. If the DevSpace server restarted, the MCP session is unknown or expired, the connection was recreated, or the workspaceId itself is rejected, rediscover tools and call ${toolNames.openWorkspace} again before continuing.`;
 }
 
 function serverInstructions(config: ServerConfig, toolNames: ToolNames): string {
@@ -832,7 +832,7 @@ function createMcpServer(
     {
       title: "Write file",
       description:
-        `Create or completely overwrite a file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files. Call open_workspace first and pass workspaceId.`,
+        `Create or completely overwrite a file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files. Call open_workspace first and pass workspaceId. ${resourceRefreshRecoveryNote(toolNames)}`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -922,7 +922,7 @@ function createMcpServer(
     {
       title: "Edit file",
       description:
-        `Edit one file inside an open workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId.`,
+        `Edit one file inside an open workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId. ${resourceRefreshRecoveryNote(toolNames)}`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1303,8 +1303,8 @@ function createMcpServer(
     {
       title: config.toolNaming === "short" ? "Bash" : "Run shell",
       description: config.minimalTools
-        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
-        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication. ${resourceRefreshRecoveryNote(toolNames)}`
+        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication. ${resourceRefreshRecoveryNote(toolNames)}`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1759,9 +1759,14 @@ export function createServer(config = loadConfig()): RunningServer {
         transport = transports.get(sessionId);
         if (!transport) {
           sendJsonRpcError(res, 400, -32000, "Unknown MCP session", {
-            code: "TOOL_RESOURCE_STALE",
+            code: "MCP_SESSION_EXPIRED",
             recoverable: true,
-            recommended_action: "rediscover_tools"
+            recommended_action: "rediscover_tools_and_reopen_workspace",
+            retry_policy: {
+              rediscoverTools: true,
+              reopenWorkspace: true,
+              reuseWorkspaceId: false,
+            },
           });
           return;
         }
