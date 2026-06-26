@@ -86,6 +86,17 @@ function migrateWorkspaceState(sqlite: Database.Database): void {
 
     create index if not exists loaded_agent_files_path_idx
       on loaded_agent_files(path);
+
+    create table if not exists tool_idempotency_keys (
+      workspace_session_id text not null,
+      idempotency_key text not null,
+      result_json text not null,
+      created_at integer not null,
+      primary key (workspace_session_id, idempotency_key),
+      foreign key (workspace_session_id)
+        references workspace_sessions(id)
+        on delete cascade
+    );
   `);
 
   addColumnIfMissing(sqlite, "workspace_sessions", "mode", "text not null default 'checkout'");

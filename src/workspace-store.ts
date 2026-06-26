@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
   workspaceSessions,
+  toolIdempotencyKeys,
   type WorkspaceSessionRow,
 } from "./db/schema.js";
 
@@ -32,6 +33,8 @@ export interface WorkspaceStore {
   }): WorkspaceSession;
   getSession(id: string): WorkspaceSession | undefined;
   touchSession(id: string): void;
+  getIdempotencyResult(workspaceId: string, key: string): string | undefined;
+  saveIdempotencyResult(workspaceId: string, key: string, resultJson: string): void;
   close?(): void;
 }
 
@@ -99,6 +102,36 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
       .where(eq(workspaceSessions.id, id))
+      .run();
+  }
+
+  getIdempotencyResult(workspaceId: string, key: string): string | undefined {
+    const row = this.database.db
+      .select({ resultJson: toolIdempotencyKeys.resultJson })
+      .from(toolIdempotencyKeys)
+      .where(
+        and(
+          eq(toolIdempotencyKeys.workspaceSessionId, workspaceId),
+          eq(toolIdempotencyKeys.idempotencyKey, key)
+        )
+      )
+      .get();
+    return row?.resultJson;
+  }
+
+  saveIdempotencyResult(workspaceId: string, key: string, resultJson: string): void {
+    this.database.db
+      .insert(toolIdempotencyKeys)
+      .values({
+        workspaceSessionId: workspaceId,
+        idempotencyKey: key,
+        resultJson: resultJson,
+        createdAt: Date.now(),
+      })
+      .onConflictDoUpdate({
+        target: [toolIdempotencyKeys.workspaceSessionId, toolIdempotencyKeys.idempotencyKey],
+        set: { resultJson },
+      })
       .run();
   }
 

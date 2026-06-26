@@ -253,10 +253,11 @@ function sendJsonRpcError(
   status: number,
   code: number,
   message: string,
+  data?: unknown,
 ): void {
   res.status(status).json({
     jsonrpc: "2.0",
-    error: { code, message },
+    error: { code, message, ...(data !== undefined ? { data } : {}) },
     id: null,
   });
 }
@@ -553,6 +554,44 @@ function createMcpServer(
 
   registerAppTool(
     server,
+    "session_status",
+    {
+      title: "Session status",
+      description: "Return session diagnostic information, including serverVersion, toolSchemaVersion, workspaceValid, and toolsValid. Use this to check if a workspace is still valid before calling tools if you suspect resources are stale.",
+      inputSchema: {
+        workspaceId: z.string().optional().describe("Optional workspaceId to validate."),
+      },
+      outputSchema: resultOutputSchema(),
+      annotations: { readOnlyHint: true },
+      _meta: {},
+    },
+    async ({ workspaceId }) => {
+      let workspaceValid = false;
+      if (workspaceId) {
+        try {
+          const workspace = workspaces.getWorkspace(workspaceId);
+          if (workspace) workspaceValid = true;
+        } catch {
+          workspaceValid = false;
+        }
+      }
+      
+      const status = {
+        serverVersion: process.env.npm_package_version || "unknown",
+        toolSchemaVersion: "1.0",
+        workspaceId,
+        workspaceValid,
+        toolsValid: true,
+      };
+
+      return {
+        content: [textBlock(JSON.stringify(status, null, 2))],
+      };
+    },
+  );
+
+  registerAppTool(
+    server,
     "open_workspace",
     {
       title: "Open workspace",
@@ -797,14 +836,24 @@ function createMcpServer(
           .string()
           .describe("File path to write, relative to the workspace root."),
         content: z.string().describe("Complete new file content."),
+        idempotencyKey: z.string().optional().describe("Optional key to safely retry the write operation."),
       },
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "write"),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, idempotencyKey, ...input }) => {
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
+      
+      if (idempotencyKey && workspaces["store"]) {
+        const cached = workspaces["store"].getIdempotencyResult(workspaceId, idempotencyKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          return { content: [{ type: "text", text: parsed.result }], structuredContent: parsed };
+        }
+      }
+
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
@@ -835,7 +884,7 @@ function createMcpServer(
         durationMs: Math.round(performance.now() - startedAt),
       });
 
-      return {
+      const finalResponse = {
         ...response,
         _meta: {
           tool: toolNames.write,
@@ -853,6 +902,12 @@ function createMcpServer(
           result: contentText(response.content),
         },
       };
+
+      if (idempotencyKey && workspaces["store"]) {
+        workspaces["store"].saveIdempotencyResult(workspaceId, idempotencyKey, JSON.stringify(finalResponse.structuredContent));
+      }
+
+      return finalResponse;
     },
   );
 
@@ -882,6 +937,7 @@ function createMcpServer(
             }),
           )
           .min(1),
+        idempotencyKey: z.string().optional().describe("Optional key to safely retry the edit operation."),
       },
       outputSchema: resultOutputSchema({
         status: z.literal("applied"),
@@ -889,9 +945,18 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "edit"),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, idempotencyKey, ...input }) => {
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
+
+      if (idempotencyKey && workspaces["store"]) {
+        const cached = workspaces["store"].getIdempotencyResult(workspaceId, idempotencyKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          return { content: [{ type: "text", text: parsed.result }], structuredContent: parsed };
+        }
+      }
+
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
@@ -924,7 +989,7 @@ function createMcpServer(
         durationMs: Math.round(performance.now() - startedAt),
       });
 
-      return {
+      const finalResponse = {
         content: editContent,
         _meta: {
           tool: toolNames.edit,
@@ -943,6 +1008,12 @@ function createMcpServer(
           result: contentText(editContent),
         },
       };
+
+      if (idempotencyKey && workspaces["store"]) {
+        workspaces["store"].saveIdempotencyResult(workspaceId, idempotencyKey, JSON.stringify(finalResponse.structuredContent));
+      }
+
+      return finalResponse;
     },
   );
 
@@ -1682,7 +1753,11 @@ export function createServer(config = loadConfig()): RunningServer {
       if (sessionId) {
         transport = transports.get(sessionId);
         if (!transport) {
-          sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
+          sendJsonRpcError(res, 400, -32000, "Unknown MCP session", {
+            code: "TOOL_RESOURCE_STALE",
+            recoverable: true,
+            recommended_action: "rediscover_tools"
+          });
           return;
         }
       } else if (initializeRequest) {

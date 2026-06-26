@@ -77,3 +77,18 @@ export type WorkspaceSessionRow = typeof workspaceSessions.$inferSelect;
 export type NewWorkspaceSessionRow = typeof workspaceSessions.$inferInsert;
 export type LoadedAgentFileRow = typeof loadedAgentFiles.$inferSelect;
 export type NewLoadedAgentFileRow = typeof loadedAgentFiles.$inferInsert;
+
+export const toolIdempotencyKeys = sqliteTable(
+  "tool_idempotency_keys",
+  {
+    workspaceSessionId: text("workspace_session_id")
+      .notNull()
+      .references(() => workspaceSessions.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    resultJson: text("result_json").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceSessionId, table.idempotencyKey] }),
+  ],
+);
