@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { WorkspaceMode, WorkspaceStore } from "./workspace-store.js";
 import { mkdir, opendir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
@@ -59,6 +60,7 @@ export interface OpenWorkspaceInput {
   path: string;
   mode?: WorkspaceMode;
   baseRef?: string;
+  agentGlobalDir?: string;
 }
 
 export class WorkspaceRegistry {
@@ -74,10 +76,10 @@ export class WorkspaceRegistry {
     const mode = options.mode ?? "checkout";
 
     if (mode === "worktree") {
-      return this.openWorktreeWorkspace(options.path, options.baseRef);
+      return this.openWorktreeWorkspace(options.path, options.baseRef, options.agentGlobalDir);
     }
 
-    return this.openCheckoutWorkspace(options.path);
+    return this.openCheckoutWorkspace(options.path, options.agentGlobalDir);
   }
 
   getWorkspace(workspaceId: string): Workspace {
@@ -160,7 +162,7 @@ export class WorkspaceRegistry {
     return assertAllowedPath(directory, [workspace.root]);
   }
 
-  private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
+  private async openCheckoutWorkspace(path: string, agentGlobalDir?: string): Promise<WorkspaceContext> {
     const root = assertAllowedPath(path, this.config.allowedRoots);
     await mkdir(root, { recursive: true });
 
@@ -169,10 +171,10 @@ export class WorkspaceRegistry {
       throw new Error(`Workspace root must be a directory: ${path}`);
     }
 
-    return this.createWorkspaceContext({ root, mode: "checkout" });
+    return this.createWorkspaceContext({ root, mode: "checkout", agentGlobalDir });
   }
 
-  private async openWorktreeWorkspace(path: string, baseRef: string | undefined): Promise<WorkspaceContext> {
+  private async openWorktreeWorkspace(path: string, baseRef: string | undefined, agentGlobalDir?: string): Promise<WorkspaceContext> {
     const worktree = await createManagedWorktree({
       sourcePath: path,
       baseRef,
@@ -184,6 +186,7 @@ export class WorkspaceRegistry {
       mode: "worktree",
       sourceRoot: worktree.sourceRoot,
       worktree,
+      agentGlobalDir,
     });
   }
 
@@ -192,6 +195,7 @@ export class WorkspaceRegistry {
     mode: WorkspaceMode;
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
+    agentGlobalDir?: string;
   }): Promise<WorkspaceContext> {
     const workspace: Workspace = {
       id: `ws_${randomUUID()}`,
@@ -213,7 +217,7 @@ export class WorkspaceRegistry {
       managed: workspace.worktree?.managed,
     });
     this.workspaces.set(workspace.id, workspace);
-    const agentsFiles = this.loadInitialAgentsFiles(workspace.root);
+    const agentsFiles = this.loadInitialAgentsFiles(workspace.root, input.agentGlobalDir);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
     return { workspace, agentsFiles, availableAgentsFiles };
@@ -239,10 +243,27 @@ export class WorkspaceRegistry {
     return assertAllowedPath(root, this.config.allowedRoots);
   }
 
-  private loadInitialAgentsFiles(root: string): LoadedAgentsFile[] {
-    const agentDir = resolve(this.config.agentDir);
+  private loadInitialAgentsFiles(root: string, agentGlobalDir?: string): LoadedAgentsFile[] {
+    const agentDir = agentGlobalDir
+      ? resolve(agentGlobalDir)
+      : resolve(this.config.agentDir);
 
-    return loadProjectContextFiles({ cwd: root, agentDir })
+    const files = loadProjectContextFiles({ cwd: root, agentDir });
+
+    // If an agent-specific global file wasn't picked up by the standard loader
+    // (e.g. GEMINI.md in ~/.gemini, OPENCODE.md in ~/.config/opencode),
+    // load it explicitly.
+    if (agentGlobalDir) {
+      const specificFile = loadAgentSpecificGlobalFile(agentDir);
+      if (
+        specificFile &&
+        !files.some((f) => resolve(f.path) === resolve(specificFile.path))
+      ) {
+        files.unshift(specificFile);
+      }
+    }
+
+    return files
       .filter((file) => {
         const path = resolve(file.path);
         if (isPathInsideRoot(path, agentDir)) return true;
@@ -273,7 +294,58 @@ export class WorkspaceRegistry {
   }
 }
 
-const CONTEXT_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+const CONTEXT_FILE_NAMES = new Set([
+  "AGENTS.md", "AGENTS.MD",
+  "CLAUDE.md", "CLAUDE.MD",
+  "GEMINI.md", "GEMINI.MD",
+  "OPENCODE.md", "OPENCODE.MD",
+]);
+
+const AGENT_SPECIFIC_FILES: Record<string, string[]> = {
+  // Claude Code
+  claude: ["CLAUDE.md"],
+  // ChatGPT / Codex-Cli / Codex
+  codex: ["AGENTS.md"],
+  chatgpt: ["AGENTS.md"],
+  // Agy (Gemini)
+  agy: ["GEMINI.md"],
+  gemini: ["GEMINI.md"],
+  // OpenCode
+  opencode: ["OPENCODE.md"],
+};
+
+function loadAgentSpecificGlobalFile(agentDir: string): {
+  path: string;
+  content: string;
+} | null {
+  // Try all known agent-specific filenames in the agent directory.
+  // The standard loader (loadProjectContextFiles) only looks for
+  // AGENTS.md/CLAUDE.md, so we explicitly check for GEMINI.md and OPENCODE.md.
+  const allCandidates = new Set<string>();
+  for (const files of Object.values(AGENT_SPECIFIC_FILES)) {
+    for (const f of files) allCandidates.add(f);
+  }
+  // Also check uppercase variants
+  const candidates = [
+    ...allCandidates,
+    ...[...allCandidates].map((f) => f.toUpperCase()),
+  ];
+
+  for (const filename of candidates) {
+    const filePath = join(agentDir, filename);
+    if (existsSync(filePath)) {
+      try {
+        return {
+          path: filePath,
+          content: readFileSync(filePath, "utf-8"),
+        };
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+  return null;
+}
 const SKIPPED_CONTEXT_DIRS = new Set([
   ".git",
   ".hg",

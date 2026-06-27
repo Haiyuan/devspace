@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -68,6 +70,52 @@ const SHELL_TOOL_ANNOTATIONS = {
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: true,
+};
+
+// ── Agent detection ─────────────────────────────────────────────────
+// DevSpace detects the connecting AI agent from the MCP initialize
+// request's clientInfo.name and loads the correct global instruction file:
+//   Claude Code → ~/.claude/CLAUDE.md
+//   ChatGPT / Codex → ~/.codex/AGENTS.md
+//   Agy / Gemini → ~/.gemini/GEMINI.md
+//   OpenCode → ~/.config/opencode/OPENCODE.md
+
+interface SessionAgentContext {
+  agentGlobalDir: string;
+  agentName: string;
+}
+
+const sessionContext = new AsyncLocalStorage<SessionAgentContext>();
+
+function getSessionAgentContext(): SessionAgentContext | undefined {
+  return sessionContext.getStore();
+}
+
+function detectAgentConfig(clientInfoName: string | undefined): SessionAgentContext {
+  const name = (clientInfoName ?? "").toLowerCase().trim();
+  for (const [key, config] of Object.entries(AGENT_DIR_MAP)) {
+    if (name.includes(key)) {
+      return { agentGlobalDir: config.dir, agentName: config.label };
+    }
+  }
+  // Default: Codex / ChatGPT
+  return {
+    agentGlobalDir: resolvePath(homedir(), ".codex"),
+    agentName: "codex",
+  };
+}
+
+const AGENT_DIR_MAP: Record<string, { dir: string; label: string }> = {
+  claude: { dir: resolvePath(homedir(), ".claude"), label: "claude" },
+  "claude-code": { dir: resolvePath(homedir(), ".claude"), label: "claude" },
+  anthropic: { dir: resolvePath(homedir(), ".claude"), label: "claude" },
+  codex: { dir: resolvePath(homedir(), ".codex"), label: "codex" },
+  "codex-cli": { dir: resolvePath(homedir(), ".codex"), label: "codex" },
+  chatgpt: { dir: resolvePath(homedir(), ".codex"), label: "codex" },
+  openai: { dir: resolvePath(homedir(), ".codex"), label: "codex" },
+  agy: { dir: resolvePath(homedir(), ".gemini"), label: "gemini" },
+  gemini: { dir: resolvePath(homedir(), ".gemini"), label: "gemini" },
+  opencode: { dir: resolvePath(homedir(), ".config/opencode"), label: "opencode" },
 };
 
 interface RunningServer {
@@ -758,7 +806,13 @@ function createMcpServer(
     },
     async ({ path, mode, baseRef }) => {
       const startedAt = performance.now();
-      const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({ path, mode, baseRef });
+      const sessionAgent = getSessionAgentContext();
+      const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({
+        path,
+        mode,
+        baseRef,
+        agentGlobalDir: sessionAgent?.agentGlobalDir,
+      });
       if (config.widgets === "changes") {
         void reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
@@ -1511,6 +1565,7 @@ export function createServer(config = loadConfig()): RunningServer {
     ...(allowedHosts ? { allowedHosts } : {}),
   });
   const transports = new Map<string, Transport>();
+  const sessionAgents = new Map<string, SessionAgentContext>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
@@ -1871,9 +1926,11 @@ export function createServer(config = loadConfig()): RunningServer {
 
     try {
       let transport: Transport | undefined;
+      let agentConfig: SessionAgentContext | undefined;
 
       if (sessionId) {
         transport = transports.get(sessionId);
+        agentConfig = sessionAgents.get(sessionId);
         if (!transport) {
           sendJsonRpcError(res, 400, -32000, "Unknown MCP session", {
             code: "MCP_SESSION_EXPIRED",
@@ -1888,13 +1945,39 @@ export function createServer(config = loadConfig()): RunningServer {
           return;
         }
       } else if (initializeRequest) {
+        // Detect which AI agent is connecting and load the appropriate
+        // global instruction file directory.
+        const clientInfoName =
+          (req.body?.params as Record<string, unknown> | undefined)
+            ?.clientInfo as
+            | { name?: unknown }
+            | undefined;
+        agentConfig = detectAgentConfig(
+          typeof clientInfoName?.name === "string"
+            ? clientInfoName.name
+            : undefined,
+        );
+        logEvent(config.logging, "info", "mcp_agent_detected", {
+          requestId,
+          agentName: agentConfig.agentName,
+          agentGlobalDir: agentConfig.agentGlobalDir,
+          clientInfoName:
+            typeof clientInfoName?.name === "string"
+              ? clientInfoName.name
+              : undefined,
+        });
+
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            if (transport) transports.set(newSessionId, transport);
+            if (transport) {
+              transports.set(newSessionId, transport);
+              sessionAgents.set(newSessionId, agentConfig!);
+            }
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
+              agentName: agentConfig!.agentName,
               ...requestLogFields(req, config),
             });
           },
@@ -1904,6 +1987,7 @@ export function createServer(config = loadConfig()): RunningServer {
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) {
             transports.delete(closedSessionId);
+            sessionAgents.delete(closedSessionId);
             logEvent(config.logging, "info", "mcp_session_closed", {
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
             });
@@ -1917,7 +2001,10 @@ export function createServer(config = loadConfig()): RunningServer {
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      await sessionContext.run(
+        agentConfig ?? { agentGlobalDir: resolvePath(homedir(), ".codex"), agentName: "codex" },
+        () => transport!.handleRequest(req, res, req.body),
+      );
     } catch (error) {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
