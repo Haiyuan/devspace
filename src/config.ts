@@ -86,7 +86,7 @@ function parseMinimalTools(env: NodeJS.ProcessEnv): boolean {
     throw new Error(`Invalid DEVSPACE_TOOL_MODE: ${env.DEVSPACE_TOOL_MODE}`);
   }
   if (env.DEVSPACE_MINIMAL_TOOLS !== undefined) return parseBoolean(env.DEVSPACE_MINIMAL_TOOLS);
-  return true;
+  return false;
 }
 
 function parseLogLevel(value: string | undefined): LogLevel {

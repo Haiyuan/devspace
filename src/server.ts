@@ -53,6 +53,12 @@ import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 type Transport = StreamableHTTPServerTransport;
 const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
+const READ_ONLY_TOOL_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
 const WRITE_TOOL_ANNOTATIONS = {
   readOnlyHint: false,
   destructiveHint: true,
@@ -728,7 +734,7 @@ function createMcpServer(
         workspaceId: z.string().optional().describe("Optional workspaceId to validate."),
       },
       outputSchema: resultOutputSchema(),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
       _meta: {},
     },
     async ({ workspaceId }) => {
@@ -802,7 +808,7 @@ function createMcpServer(
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ path, mode, baseRef }) => {
       const startedAt = performance.now();
@@ -936,7 +942,7 @@ function createMcpServer(
       },
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "read"),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
@@ -1211,7 +1217,7 @@ function createMcpServer(
         },
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "show_changes"),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, since, markReviewed }) => {
         const startedAt = performance.now();
@@ -1275,7 +1281,7 @@ function createMcpServer(
         },
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search"),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
@@ -1345,7 +1351,7 @@ function createMcpServer(
         },
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search"),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
@@ -1415,7 +1421,7 @@ function createMcpServer(
         },
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "directory"),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();

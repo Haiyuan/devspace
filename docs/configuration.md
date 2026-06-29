@@ -70,8 +70,8 @@ MCP clients discover metadata from:
 
 | Value | Behavior |
 | --- | --- |
-| `minimal` | Default. Disables dedicated search and list tools. Clients use the shell tool with `rg`, `grep`, `find`, `ls`, or `tree` for inspection. |
-| `full` | Enables dedicated `grep`, `glob`, and `ls` tools. |
+| `minimal` | Disables dedicated search and list tools. Clients use the shell tool with `rg`, `grep`, `find`, `ls`, or `tree` for inspection. Use only when you intentionally want the smallest tool surface. |
+| `full` | Default. Enables dedicated read-only `grep`, `glob`, and `ls` tools so routine inspection does not need the shell tool. |
 
 ## Widgets
 
@@ -122,7 +122,7 @@ DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -base64 32)" \
 DEVSPACE_ALLOWED_ROOTS="$HOME/personal,$HOME/work" \
 DEVSPACE_PUBLIC_BASE_URL="https://devspace.example.com" \
 DEVSPACE_WORKTREE_ROOT="$HOME/.devspace/worktrees" \
-DEVSPACE_TOOL_MODE="minimal" \
+DEVSPACE_TOOL_MODE="full" \
 DEVSPACE_TOOL_NAMING="short" \
 DEVSPACE_WIDGETS="full" \
 npx @waishnav/devspace serve
