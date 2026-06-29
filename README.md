@@ -133,7 +133,7 @@ and show you what changed.
 
 DevSpace gives ChatGPT tools to:
 
-- read, write, and edit files inside the opened workspace
+- read, create, write, and edit files inside the opened workspace
 - search code and inspect directories
 - run shell commands for tests, builds, git, and package scripts
 - use isolated Git worktrees for parallel coding sessions

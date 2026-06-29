@@ -63,8 +63,8 @@ MCP clients discover metadata from:
 
 | Value | Behavior |
 | --- | --- |
-| `short` | Default. Uses `read`, `edit`, `bash`, and related names. |
-| `legacy` | Uses `read_file`, `edit_file`, `run_shell`, and related names. |
+| `short` | Default. Uses `read`, `create`, `edit`, `bash`, and related names. |
+| `legacy` | Uses `read_file`, `create_file`, `edit_file`, `run_shell`, and related names. |
 
 `DEVSPACE_TOOL_MODE` controls the tool surface.
 

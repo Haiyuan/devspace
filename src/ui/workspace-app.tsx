@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  isCreateTool,
   isEditTool,
   isExpandableCard,
   isReadTool,
@@ -295,7 +296,7 @@ async function renderPayloadIfNeeded(): Promise<void> {
 }
 
 function shouldUseHeavyPayload(card: ToolResultCard): boolean {
-  return isReadTool(card.tool) || isEditTool(card.tool) || isWriteTool(card.tool);
+  return isReadTool(card.tool) || isCreateTool(card.tool) || isEditTool(card.tool) || isWriteTool(card.tool);
 }
 
 function unmountPayload(): void {
@@ -340,7 +341,7 @@ function renderSummaryBadge(card: ToolResultCard): HTMLElement {
     return stats;
   }
 
-  if (isEditTool(card.tool) || isWriteTool(card.tool)) {
+  if (isCreateTool(card.tool) || isEditTool(card.tool) || isWriteTool(card.tool)) {
     const stats = element("span", { className: "stats" });
     stats.setAttribute("aria-label", "Diff statistics");
     stats.append(
@@ -495,6 +496,9 @@ function getToolDisplay(card: ToolResultCard): ToolDisplay {
     case "read_file":
     case "read":
       return { icon: fileIcon(), title: "Read File", label, tone: "read" };
+    case "create_file":
+    case "create":
+      return { icon: filePlusIcon(), title: "Create File", label, tone: "write" };
     case "write_file":
     case "write":
       return { icon: filePlusIcon(), title: "Write File", label, tone: "write" };

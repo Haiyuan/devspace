@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, readFileSync } from "node:fs";
-import { access, realpath } from "node:fs/promises";
+import { access, readFile, realpath } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,12 @@ const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+const CREATE_TOOL_ANNOTATIONS = {
+  readOnlyHint: false,
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: false,
@@ -202,6 +208,7 @@ function toolWidgetDescriptorMeta(
 interface ToolNames {
   openWorkspace: "open_workspace";
   read: "read_file" | "read";
+  create: "create_file" | "create";
   write: "write_file" | "write";
   edit: "edit_file" | "edit";
   grep: "grep_files" | "grep";
@@ -227,6 +234,7 @@ function toolNamesFor(config: ServerConfig): ToolNames {
     ? {
         openWorkspace: "open_workspace",
         read: "read",
+        create: "create",
         write: "write",
         edit: "edit",
         grep: "grep",
@@ -237,6 +245,7 @@ function toolNamesFor(config: ServerConfig): ToolNames {
     : {
         openWorkspace: "open_workspace",
         read: "read_file",
+        create: "create_file",
         write: "write_file",
         edit: "edit_file",
         grep: "grep_files",
@@ -272,7 +281,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
 
   return [
     `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree, then reuse the workspaceId until switching folders/worktrees, changing checkout/worktree mode, receiving an unknown workspaceId, or being asked to reopen.`,
-    `Tool choice: ${toolNames.read}=direct inspection; ${toolNames.edit}=targeted exact replacements; ${toolNames.write}=new files or full rewrites; ${toolNames.shell}=tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not edit files with ${toolNames.shell}.`,
+    `Tool choice: ${toolNames.read}=direct inspection; ${toolNames.create}=new files without overwriting; ${toolNames.edit}=targeted exact replacements; ${toolNames.write}=full overwrites only when explicitly needed; ${toolNames.shell}=tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not create, edit, or overwrite files with ${toolNames.shell}; if a mutating file tool is denied by the host approval UI, stop and report the denial instead of bypassing it with ${toolNames.shell}.`,
     `After ${toolNames.openWorkspace}, follow returned agentsFiles, availableAgentsFiles, skills, and workspace guidance.`,
     skills,
     inspection,
@@ -312,7 +321,7 @@ function workspaceInstruction(
 
   return [
     `Use this workspaceId for this project. Do not call ${toolNames.openWorkspace} again unless it stops working, the user asks to reopen, or you switch folder/worktree.`,
-    `Fastest safe workflow: inspect with ${toolNames.read}; make targeted existing-file changes with ${toolNames.edit}; use ${toolNames.write} for new files or complete rewrites; use ${toolNames.shell} for tests, builds, git inspection, search, and read-only shell inspection, not file edits.`,
+    `Fastest safe workflow: inspect with ${toolNames.read}; create new files with ${toolNames.create}; make targeted existing-file changes with ${toolNames.edit}; use ${toolNames.write} only for explicit full overwrites; use ${toolNames.shell} for tests, builds, git inspection, search, and read-only shell inspection, not file creation or edits. If a mutating file tool is denied by the host approval UI, stop and report the denial instead of bypassing it with ${toolNames.shell}.`,
     nestedInstructions,
     skills,
     guideReferences,
@@ -1000,11 +1009,124 @@ function createMcpServer(
 
   registerAppTool(
     server,
+    toolNames.create,
+    {
+      title: "Create file",
+      description:
+        `Create a new file inside an open workspace and fail if the path already exists with different content. Prefer this over ${toolNames.write} for new files. Do not use ${toolNames.shell} as a fallback when this tool is denied by the host approval UI.`,
+      inputSchema: {
+        workspaceId: z
+          .string()
+          .describe("Workspace identifier returned by open_workspace."),
+        path: z
+          .string()
+          .describe("New file path to create, relative to the workspace root."),
+        content: z.string().describe("Complete new file content."),
+      },
+      outputSchema: resultOutputSchema({
+        status: z.enum(["created", "already_exists"]),
+      }),
+      ...toolWidgetDescriptorMeta(config, "write"),
+      annotations: CREATE_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, ...input }) => {
+      const startedAt = performance.now();
+      const workspace = workspaces.getWorkspace(workspaceId);
+      const absolutePath = workspaces.resolvePath(workspace, input.path);
+      let status: "created" | "already_exists" = "created";
+      let patch: string | undefined;
+
+      try {
+        await access(absolutePath, constants.F_OK);
+        const existingContent = await readFile(absolutePath, "utf8");
+        if (existingContent !== input.content) {
+          const content = [
+            textBlock(
+              `File already exists with different content: ${input.path}. Use ${toolNames.edit} for targeted changes or ${toolNames.write} only when a full overwrite is explicitly intended.`,
+            ),
+          ];
+          logFailedToolResponse(config, {
+            tool: toolNames.create,
+            workspaceId,
+            path: input.path,
+          }, content, startedAt);
+          return { content, isError: true };
+        }
+        status = "already_exists";
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          const content = [textBlock(error instanceof Error ? error.message : String(error))];
+          logFailedToolResponse(config, {
+            tool: toolNames.create,
+            workspaceId,
+            path: input.path,
+          }, content, startedAt);
+          return { content, isError: true };
+        }
+
+        const response = await writeFileTool(input, {
+          cwd: workspace.root,
+          root: workspace.root,
+        });
+        if (response.isError) {
+          logFailedToolResponse(config, {
+            tool: toolNames.create,
+            workspaceId,
+            path: input.path,
+          }, response.content, startedAt);
+          return response;
+        }
+        patch = newFilePatch(input.path, input.content);
+      }
+
+      const stats = countDiffStats(patch);
+      const summary = {
+        ...stats,
+        status,
+        lines: contentLineCount(input.content),
+        characters: input.content.length,
+      };
+      const resultText = status === "created"
+        ? `Created ${input.path} (+${stats.additions} -${stats.removals}).`
+        : `File already exists with matching content: ${input.path}.`;
+      const content = [textBlock(resultText)];
+      logToolCall(config, {
+        tool: toolNames.create,
+        workspaceId,
+        path: input.path,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+
+      return {
+        content,
+        _meta: {
+          tool: toolNames.create,
+          card: {
+            workspaceId,
+            path: input.path,
+            summary,
+            payload: {
+              content,
+              patch,
+            },
+          },
+        },
+        structuredContent: {
+          status,
+          result: contentText(content),
+        },
+      };
+    },
+  );
+
+  registerAppTool(
+    server,
     toolNames.write,
     {
       title: "Write file",
       description:
-        `Create a new file or completely overwrite an existing file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files.`,
+        `Completely overwrite a file inside an open workspace. Prefer ${toolNames.create} for new files and ${toolNames.edit} for targeted changes to existing files. Do not use ${toolNames.shell} as a fallback when this tool is denied by the host approval UI.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1475,8 +1597,8 @@ function createMcpServer(
     {
       title: config.toolNaming === "short" ? "Bash" : "Run shell",
       description: config.minimalTools
-        ? `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, file discovery, and read-only shell inspection. Minimal mode disables ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls}; use grep, rg, find, ls, or tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. This is powerful local execution and should only be exposed behind strong authentication.`
-        : `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. This is powerful local execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, file discovery, and read-only shell inspection. Minimal mode disables ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls}; use grep, rg, find, ls, or tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.create} for new files, ${toolNames.edit} for targeted changes, and ${toolNames.write} for explicit full overwrites. Do not use ${toolNames.shell} as a fallback when a file mutation tool is denied by the host approval UI. Prefer ${toolNames.read} for direct file reads. This is powerful local execution and should only be exposed behind strong authentication.`
+        : `Run a shell command inside an open workspace for tests, builds, git inspection, package scripts, search, and read-only shell inspection. Do not use ${toolNames.shell} to create or modify files; use ${toolNames.create} for new files, ${toolNames.edit} for targeted changes, and ${toolNames.write} for explicit full overwrites. Do not use ${toolNames.shell} as a fallback when a file mutation tool is denied by the host approval UI. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. This is powerful local execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1484,7 +1606,7 @@ function createMcpServer(
         command: z
           .string()
           .describe(
-            `Shell command to run. Must not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
+            `Shell command to run. Must not create or modify project files; use ${toolNames.create}, ${toolNames.edit}, or ${toolNames.write} for file changes.`,
           ),
         workingDirectory: z
           .string()

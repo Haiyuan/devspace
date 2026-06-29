@@ -39,15 +39,20 @@ Use `bash` for tests, builds, Git inspection, package scripts, search, and
 read-only repository discovery. Good examples include `npm test`, `npm run
 verify`, `git status`, `git diff`, `rg`, and `find`.
 
-Do not use `bash` to edit files. Avoid shell redirection, heredocs, `tee`,
-`sed -i`, `perl -i`, generated scripts, or one-off `node`/`python` scripts that
-write project files. Use DevSpace file tools instead.
+Do not use `bash` to create, edit, or overwrite files. Avoid shell redirection,
+heredocs, `tee`, `sed -i`, `perl -i`, generated scripts, or one-off
+`node`/`python` scripts that write project files. Use DevSpace file tools
+instead. If a file mutation tool is denied by the host approval UI, stop and
+report the denial; do not bypass it with `bash`.
+
+Use `create` for new files. It must fail when the target path already exists
+with different content.
 
 Use `edit` for targeted changes to existing files. Keep each replacement block
 small but unique. Combine nearby replacements when that reduces churn.
 
-Use `write` only for new files or complete rewrites. Do not use it for small
-patches to existing files.
+Use `write` only for explicit full overwrites. Do not use it for small patches
+to existing files.
 
 ## Guardgit Gates
 

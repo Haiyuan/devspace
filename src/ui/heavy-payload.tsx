@@ -4,6 +4,7 @@ import { FileStream, getFiletypeFromFileName } from "@pierre/diffs";
 import type { FileStreamOptions } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
+  isCreateTool,
   isEditTool,
   isReadTool,
   isWriteTool,
@@ -54,6 +55,11 @@ function HeavyPayload({
 
   if (errorMessage) {
     return <StatusLine message={errorMessage} tone="error" />;
+  }
+
+  if (isCreateTool(card.tool)) {
+    const patch = card.payload?.patch;
+    if (patch) return <DiffPayload patch={patch} themeType={themeType} />;
   }
 
   if (isEditTool(card.tool) || isWriteTool(card.tool)) {
