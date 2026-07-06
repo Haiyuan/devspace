@@ -83,11 +83,23 @@ DevSpace discovers standard Agent Skills from:
 
 - `~/.agents/skills`
 - project `.agents/skills`
+- `~/.devspace/skills`
 
 It also keeps compatibility with:
 
+- the bundled `subagent-delegation` skill when `DEVSPACE_SUBAGENTS=1`, unless `~/.devspace/skills/subagent-delegation/SKILL.md` exists
 - `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
 - additional paths from `DEVSPACE_SKILL_PATHS`
+
+When Subagents are enabled, DevSpace discovers agent profiles
+from `~/.devspace/agents/*.md` and project `.devspace/agents/*.md`.
+`open_workspace` exposes a compact catalog with profile names, descriptions,
+providers, and optional models/thinking levels so the model can choose a configured agent
+without seeing provider-specific launch details.
+
+Example profiles are packaged under `examples/agents/` for users who want
+starter templates. Copy or adapt them into one of the active profile directories
+before use.
 
 Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
 
@@ -99,11 +111,16 @@ Skill paths may be outside the workspace. DevSpace only permits reading:
 - advertised `SKILL.md` files
 - files under a skill directory after that skill's `SKILL.md` has been read
 
-Set `DEVSPACE_SKILLS=0` to hide skills from workspace output.
+Set `DEVSPACE_SKILLS=0` to hide skills from workspace output. Set
+`DEVSPACE_SUBAGENTS=1` to expose the experimental subagent catalog and
+`subagent-delegation` skill. That skill teaches the minimal
+`devspace agents ls`, `devspace agents run`, and `devspace agents show`
+workflow. The catalog comes from `open_workspace`; `devspace agents ls` lists
+existing subagent sessions for that workspace.
 
 ## Tool Names
 
-Short names are the default:
+DevSpace exposes these tool names:
 
 - `open_workspace`
 - `read`
@@ -114,14 +131,6 @@ Short names are the default:
 By default, DevSpace also runs in `DEVSPACE_TOOL_MODE=minimal`, so dedicated
 `grep`, `glob`, and `ls` tools are hidden. Use `bash` with command-line tools
 such as `rg`, `find`, and `ls` for search and directory inspection.
-
-Legacy names are available with `DEVSPACE_TOOL_NAMING=legacy`:
-
-- `open_workspace`
-- `read_file`
-- `write_file`
-- `edit_file`
-- `run_shell`
 
 Use `DEVSPACE_TOOL_MODE=full` to restore dedicated search and directory tools.
 
@@ -148,6 +157,11 @@ and shell tools. The aggregate `show_changes` tool is not exposed by default.
 
 Use `DEVSPACE_WIDGETS=off` to disable widget UI, or `DEVSPACE_WIDGETS=changes`
 to expose the aggregate show-changes flow.
+
+When `show_changes` is exposed, models should call it exactly once after the
+final file modification in any turn that changes files. The tool only requires
+the `workspaceId`; DevSpace automatically compares against the last shown
+checkpoint and advances that checkpoint after rendering the aggregate diff.
 
 ## Shell Use
 

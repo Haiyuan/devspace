@@ -3,9 +3,8 @@ import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
-import { loadDevspaceFiles } from "./user-config.js";
+import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
 
-export type ToolNamingMode = "legacy" | "short";
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off" | "changes" | "full";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
@@ -19,12 +18,14 @@ export interface ServerConfig {
   allowedHosts: string[];
   publicBaseUrl: string;
   toolMode: ToolMode;
-  toolNaming: ToolNamingMode;
   widgets: WidgetMode;
   stateDir: string;
   worktreeRoot: string;
   skillsEnabled: boolean;
   skillPaths: string[];
+  devspaceSkillsDir: string;
+  devspaceAgentsDir: string;
+  subagents: boolean;
   agentDir: string;
   logging: LoggingConfig;
 }
@@ -134,13 +135,6 @@ function parsePositiveInteger(value: string | undefined, fallback: number, name:
   return parsed;
 }
 
-function parseToolNaming(value: string | undefined): ToolNamingMode {
-  if (!value || value === "short") return "short";
-  if (value === "legacy") return "legacy";
-
-  throw new Error(`Invalid DEVSPACE_TOOL_NAMING: ${value}`);
-}
-
 function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
   return {
     level: parseLogLevel(env.DEVSPACE_LOG_LEVEL),
@@ -234,12 +228,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
     publicBaseUrl,
     toolMode: parseToolMode(env),
-    toolNaming: parseToolNaming(env.DEVSPACE_TOOL_NAMING),
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
     stateDir: resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
+    devspaceSkillsDir: devspaceSkillsDir(env),
+    devspaceAgentsDir: devspaceAgentsDir(env),
+    subagents:
+      env.DEVSPACE_SUBAGENTS === undefined
+        ? files.config.subagents === true
+        : parseBoolean(env.DEVSPACE_SUBAGENTS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
   };
