@@ -89,7 +89,7 @@ export function isReadTool(tool: ToolName): boolean {
 }
 
 export function isCreateTool(tool: ToolName): boolean {
-  return tool === "create_file" || tool === "create";
+  return tool === "create";
 }
 
 export function isWriteTool(tool: ToolName): boolean {
