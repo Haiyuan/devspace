@@ -196,6 +196,7 @@ devspace doctor
 - [Task Prompt Templates](https://github.com/Waishnav/devspace/blob/main/docs/task_prompts.md)
 - [Documentation Map](https://github.com/Waishnav/devspace/blob/main/docs/documentation_map.md)
 - [Configuration Reference](https://github.com/Waishnav/devspace/blob/main/docs/configuration.md)
+- [Native File Download](https://github.com/Waishnav/devspace/blob/main/docs/artifact-exchange.md)
 - [Security Model](https://github.com/Waishnav/devspace/blob/main/docs/security.md)
 - [Troubleshooting Gotchas](https://github.com/Waishnav/devspace/blob/main/docs/gotchas.md)
 
