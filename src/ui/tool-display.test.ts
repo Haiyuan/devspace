@@ -5,6 +5,9 @@ import { getToolDisplay, getToolHeaderSummary } from "./tool-display.js";
 
 const displayCases: Array<[ToolResultCard, { title: string; tone: string }]> = [
   [{ tool: "open_workspace", root: "/tmp/project" }, { title: "Opened workspace", tone: "workspace" }],
+  [{ tool: "open_workspace", root: "/tmp/project", workspaceReused: true }, { title: "Reused workspace", tone: "workspace" }],
+  [{ tool: "open_workspace", root: "/tmp/project", mode: "worktree" }, { title: "Opened workspace", tone: "workspace" }],
+  [{ tool: "open_workspace", root: "/tmp/project", mode: "worktree", workspaceReused: true }, { title: "Reused workspace", tone: "workspace" }],
   [{ tool: "read", path: "src/read.ts" }, { title: "Read file", tone: "read" }],
   [{ tool: "create", path: "src/create.ts" }, { title: "Created file", tone: "write" }],
   [{ tool: "write", path: "src/write.ts" }, { title: "Wrote file", tone: "write" }],
@@ -27,16 +30,36 @@ for (const [card, expected] of displayCases) {
 
 assert.equal(getToolDisplay({ tool: "open_workspace", root: "/tmp/project" }).label, "/tmp/project");
 assert.equal(
+  getToolDisplay({ tool: "open_workspace", root: "/tmp/project" }).icon,
+  toolIcons.folderOpen,
+);
+assert.equal(
+  getToolDisplay({ tool: "open_workspace", root: "/tmp/project", mode: "worktree" }).icon,
+  toolIcons.gitBranch,
+);
+assert.equal(
   getToolDisplay({ tool: "grep", summary: { pattern: "needle", scope: "src" } }).label,
   "needle in src",
+);
+
+assert.equal(
+  getToolDisplay({
+    tool: "apply_patch",
+    files: [{
+      path: "src/new-name.ts",
+      previousPath: "src/old-name.ts",
+      operation: "move",
+    }],
+  }).label,
+  "src/old-name.ts → src/new-name.ts",
 );
 
 assert.deepEqual(
   pickDisplay(getToolDisplay({
     tool: "show_changes",
     files: [
-      { path: "src/a.ts", operation: "update" },
-      { path: "src/b.ts", operation: "update" },
+      { path: "src/a.ts", type: "change" },
+      { path: "src/b.ts", type: "change" },
     ],
   })),
   { title: "Edited 2 files", tone: "review" },
@@ -46,12 +69,27 @@ assert.deepEqual(
   pickDisplay(getToolDisplay({
     tool: "show_changes",
     files: [
-      { path: "src/a.ts", operation: "add" },
-      { path: "src/b.ts", operation: "update" },
+      { path: "src/a.ts", type: "new" },
+      { path: "src/b.ts", type: "change" },
     ],
   })),
   { title: "Changed 2 files", tone: "review" },
 );
+
+assert.deepEqual(
+  pickDisplay(getToolDisplay({
+    tool: "show_changes",
+    files: [{ path: "src/old.ts", type: "deleted" }],
+  })),
+  { title: "Deleted 1 file", tone: "review" },
+);
+
+assert.equal(
+  getToolDisplay({ tool: "show_changes", payload: { patch: "diff --git a/a b/a" } }).title,
+  "Changes ready",
+);
+
+assert.equal(getToolDisplay({ tool: "show_changes" }).title, "No changes");
 
 assert.equal(
   getToolDisplay({ tool: "exec_command", summary: { running: true, command: "npm test" } }).title,
@@ -64,6 +102,18 @@ assert.equal(
 assert.equal(
   getToolDisplay({ tool: "write_stdin", summary: { running: false, exitCode: 0 } }).title,
   "Process finished",
+);
+assert.equal(
+  getToolDisplay({ tool: "exec_command", summary: { running: true } }).state,
+  "running",
+);
+assert.equal(
+  getToolDisplay({ tool: "exec_command", summary: { running: false, exitCode: 0 } }).state,
+  "success",
+);
+assert.equal(
+  getToolDisplay({ tool: "exec_command", summary: { running: false, exitCode: 1 } }).state,
+  "error",
 );
 
 assert.deepEqual(
@@ -99,7 +149,7 @@ assert.deepEqual(
     tool: "open_workspace",
     summary: { mode: "worktree", agentsFiles: 1, skills: 4 },
   }),
-  { kind: "text", text: "worktree · 1 instruction · 4 skills" },
+  { kind: "text", text: "1 instruction · 4 skills" },
 );
 
 assert.deepEqual(

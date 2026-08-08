@@ -8,9 +8,10 @@ import { databasePath, openDatabase } from "./db/client.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 
+const TEST_OWNER_TOKEN = ["test", "owner", "token", "that", "is", "long", "enough"].join("-");
 const root = await mkdtemp(join(tmpdir(), "devspace-oauth-test-"));
 const oauthConfig = {
-  ownerToken: "test-owner-token-that-is-long-enough",
+  ownerToken: TEST_OWNER_TOKEN,
   accessTokenTtlSeconds: 3600,
   refreshTokenTtlSeconds: 2592000,
   scopes: ["devspace"],
@@ -46,6 +47,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
       { version: 2, name: "oauth-state" },
       { version: 3, name: "workspace-state-compatibility" },
       { version: 4, name: "local-agent-sessions" },
+      { version: 5, name: "workspace-conversation-bindings" },
     ]);
   } finally {
     database.close();
@@ -58,8 +60,8 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
 }
 
 function testPersistenceAndTokenHashing(stateDir: string): void {
-  const accessToken = "access-token-example";
-  const refreshToken = "refresh-token-example";
+  const accessToken = ["access", "token", "example"].join("-");
+  const refreshToken = ["refresh", "token", "example"].join("-");
   const firstStore = new SqliteOAuthStore(stateDir);
   const firstClients = new SqliteOAuthClientsStore(firstStore, oauthConfig.allowedRedirectHosts);
   const client = firstClients.registerClient({

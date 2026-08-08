@@ -60,6 +60,7 @@ import {
 } from "./mcp-sessions.js";
 import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
+import { openAiConversationScopeId } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
@@ -265,7 +266,7 @@ function serverInstructions(config: ServerConfig): string {
 
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Open it again when the workspaceId is invalid, the project changes, checkout/worktree mode changes, or another isolated worktree is needed. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -929,7 +930,7 @@ function registerCodexProcessTools(
   );
 }
 
-function createMcpServer(
+export function createMcpServer(
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
@@ -1036,7 +1037,7 @@ function createMcpServer(
           .enum(["checkout", "worktree"])
           .optional()
           .describe(
-            "Defaults to checkout. Use checkout to work in the actual directory. Use worktree to create an isolated managed Git worktree for parallel work.",
+            "Defaults to checkout, which works in the actual directory. Use worktree for isolated or parallel Git work.",
           ),
         baseRef: z
           .string()
@@ -1058,63 +1059,83 @@ function createMcpServer(
             managed: z.boolean(),
           })
           .optional(),
-        agentsFiles: z.array(workspaceAgentsFileOutputSchema),
-        availableAgentsFiles: z.array(workspaceAvailableAgentsFileOutputSchema),
-        skills: z.array(workspaceSkillOutputSchema),
-        agentProviders: z.array(workspaceLocalAgentProviderOutputSchema),
-        agents: z.array(workspaceLocalAgentOutputSchema),
-        skillDiagnostics: z.array(z.unknown()),
+        agentsFiles: z.array(workspaceAgentsFileOutputSchema).optional(),
+        availableAgentsFiles: z.array(workspaceAvailableAgentsFileOutputSchema).optional(),
+        skills: z.array(workspaceSkillOutputSchema).optional(),
+        agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
+        agents: z.array(workspaceLocalAgentOutputSchema).optional(),
+        skillDiagnostics: z.array(z.unknown()).optional(),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
-    async ({ path, mode, baseRef }) => {
+    async ({ path, mode, baseRef }, { _meta }) => {
       const startedAt = performance.now();
       const sessionAgent = getSessionAgentContext();
-      const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({
-        path,
-        mode,
-        baseRef,
-        agentGlobalDir: sessionAgent?.agentGlobalDir,
-      });
+      const {
+        workspace,
+        agentsFiles,
+        availableAgentsFiles,
+        workspaceReused,
+        includeBootstrapContext,
+      } = await workspaces.openWorkspace(
+        { path, mode, baseRef, agentGlobalDir: sessionAgent?.agentGlobalDir },
+        { conversationScopeId: openAiConversationScopeId(_meta) },
+      );
       if (config.widgets === "changes") {
-        void reviewCheckpoints.initializeWorkspace({
+        await reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
           root: workspace.root,
         });
       }
-      const visibleSkills = workspace.skills
+      const cardSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({
           name: skill.name,
           description: skill.description,
           path: formatPathForPrompt(skill.filePath),
         }));
-      const visibleAgentProviders = config.subagents ? localAgentProviders : [];
-      const visibleAgents = workspace.agentProfiles.map((profile) => {
+      const cardAgentProviders = config.subagents ? localAgentProviders : [];
+      const cardAgents = workspace.agentProfiles.map((profile) => {
         const summary = summarizeLocalAgentProfile(profile);
-        const availability = visibleAgentProviders.find((provider) => provider.name === summary.provider);
+        const availability = cardAgentProviders.find((provider) => provider.name === summary.provider);
         return {
           ...summary,
           providerAvailable: availability?.available,
           providerUnavailableReason: availability?.reason,
         };
       });
-      const loadedAgentsFiles = agentsFiles.map((file) => ({
+      const cardAgentsFiles = agentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
         content: file.content,
       }));
-      const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({
+      const cardAvailableAgentsFiles = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
       const guidePaths = await existingWorkspaceGuidePaths(workspace.root);
-      const instruction = workspaceInstruction(config, guidePaths);
+      const cardInstruction = workspaceInstruction(config, guidePaths);
+      const visibleSkills = includeBootstrapContext ? cardSkills : [];
+      const visibleAgentProviders = includeBootstrapContext ? cardAgentProviders : [];
+      const visibleAgents = includeBootstrapContext ? cardAgents : [];
+      const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
+      const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
+      const instruction = workspaceReused
+        ? [
+            `Workspace already open as ${workspace.id}.`,
+            "Reuse this workspaceId for subsequent tool calls. This is the same checkout previously opened for this project in this conversation.",
+            "Continue following the project instructions, nested instruction files, skills, agent profiles, and diagnostics previously provided for this workspace. They remain the active workspace context and are not repeated here.",
+          ].join("\n\n")
+        : cardInstruction;
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
           text: [
-            `Opened workspace ${workspace.id}`,
+            workspaceReused
+              ? `Workspace already open as ${workspace.id}.`
+              : workspace.mode === "worktree"
+                ? `Opened isolated worktree workspace ${workspace.id}.`
+                : `Opened workspace ${workspace.id}.`,
             `Root: ${workspace.root}`,
             `Mode: ${workspace.mode}`,
             loadedAgentsFiles.length > 0
@@ -1155,14 +1176,24 @@ function createMcpServer(
             workspaceId: workspace.id,
             root: workspace.root,
             path: workspace.root,
+            mode: workspace.mode,
+            workspaceReused,
+            includeBootstrapContext,
+            sourceRoot: workspace.sourceRoot,
+            worktree: workspace.worktree,
+            agentsFiles: cardAgentsFiles,
+            availableAgentsFiles: cardAvailableAgentsFiles,
+            skills: cardSkills,
+            agentProviders: cardAgentProviders,
+            agents: cardAgents,
+            instruction: cardInstruction,
             summary: {
               mode: workspace.mode,
-              agentsFiles: loadedAgentsFiles.length,
-              availableAgentsFiles: availableAgentsFileOutputs.length,
-              skills: visibleSkills.length,
-              agentProviders: visibleAgentProviders.length,
-              agents: visibleAgents.length,
-              skillDiagnostics: workspace.skillDiagnostics.length,
+              agentsFiles: cardAgentsFiles.length,
+              availableAgentsFiles: cardAvailableAgentsFiles.length,
+              skills: cardSkills.length,
+              agentProviders: cardAgentProviders.length,
+              agents: cardAgents.length,
             },
           },
         },
@@ -1172,12 +1203,16 @@ function createMcpServer(
           mode: workspace.mode,
           sourceRoot: workspace.sourceRoot,
           worktree: workspace.worktree,
-          agentsFiles: loadedAgentsFiles,
-          availableAgentsFiles: availableAgentsFileOutputs,
-          skills: visibleSkills,
-          agentProviders: visibleAgentProviders,
-          agents: visibleAgents,
-          skillDiagnostics: workspace.skillDiagnostics,
+          ...(includeBootstrapContext
+            ? {
+                agentsFiles: loadedAgentsFiles,
+                availableAgentsFiles: availableAgentsFileOutputs,
+                skills: visibleSkills,
+                agentProviders: visibleAgentProviders,
+                agents: visibleAgents,
+                skillDiagnostics: workspace.skillDiagnostics,
+              }
+            : {}),
           instruction,
         },
       };
@@ -1674,7 +1709,7 @@ function createMcpServer(
       {
         title: "Show changes",
         description:
-          "Show aggregate file changes for an open workspace. If the current turn successfully modified files, call this exactly once after the final related file change and before your final response so the user can inspect the combined diff for the turn. Do not call it after every individual file change, and do not skip it because prior file-change tools already displayed per-tool diffs.",
+          "Show the changes made in this turn for an open workspace. Call this once after the final related file change and before your final response so the user can review the combined diff. Do not call it after each individual file change.",
         inputSchema: {
           workspaceId: z
             .string()
@@ -1690,7 +1725,6 @@ function createMcpServer(
         const review = await reviewCheckpoints.reviewChanges({
           workspaceId,
           root: workspace.root,
-          since: "last_shown",
           markReviewed: true,
         });
 
